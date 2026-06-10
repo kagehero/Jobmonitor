@@ -1,0 +1,127 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum ScrapingType {
+  HTML_PARSE
+  API
+  HYBRID
+}
+
+enum DiscordDeliveryStatus {
+  PENDING
+  SENT
+  FAILED
+}
+
+model MonitoringSource {
+  id               String       @id @default(cuid())
+  platform         String
+  url              String       @unique
+  scrapingType     ScrapingType @default(HTML_PARSE) @map("scraping_type")
+  pollingInterval  Int          @default(180) @map("polling_interval")
+  active           Boolean      @default(true)
+  parserVersion    String       @default("1.0.0") @map("parser_version")
+  lastCheckedAt    DateTime?    @map("last_checked_at")
+  status           String       @default("idle")
+  createdAt        DateTime     @default(now()) @map("created_at")
+  updatedAt        DateTime     @updatedAt @map("updated_at")
+
+  scrapeHistories ScrapeHistory[]
+  detectedJobs    DetectedJob[]
+
+  @@index([platform, active])
+  @@map("monitoring_sources")
+}
+
+model DetectedJob {
+  id                 String           @id @default(cuid())
+  sourceId           String           @map("source_id")
+  title              String
+  description        String           @default("")
+  budget             String           @default("")
+  clientName         String           @default("") @map("client_name")
+  /// Monitor ``client_profile_url`` (e.g. ``/client/slug`` or CrowdWorks employer path).
+  clientProfileUrl   String?          @map("client_profile_url")
+  clientOrders       String?          @map("client_orders")
+  clientRating       Float?           @map("client_rating")
+  /// Full ``client_extras`` line from listing/profile enrichment (発注率・フィードバック等).
+  clientExtrasSummary String?         @map("client_extras_summary") @db.Text
+  clientAvatarUrl    String?          @map("client_avatar_url")
+  projectUrl         String           @map("project_url")
+  postedAt           DateTime?        @map("posted_at")
+  detectedAt         DateTime         @default(now()) @map("detected_at")
+  aiScore            Float?           @map("ai_score")
+  tags               String[]
+  notificationSent   Boolean          @default(false) @map("notification_sent")
+  rawData            Json?            @map("raw_data")
+
+  source MonitoringSource       @relation(fields: [sourceId], references: [id], onDelete: Cascade)
+  discordNotifications DiscordNotification[]
+  aiAnalysis           AiAnalysis?
+
+  @@unique([projectUrl])
+  @@index([sourceId, detectedAt(sort: Desc)])
+  @@index([aiScore(sort: Desc)])
+  @@map("detected_jobs")
+}
+
+model ScrapeHistory {
+  id          String    @id @default(cuid())
+  sourceId    String    @map("source_id")
+  startedAt   DateTime  @default(now()) @map("started_at")
+  finishedAt  DateTime? @map("finished_at")
+  success     Boolean   @default(false)
+  jobsFound   Int       @default(0) @map("jobs_found")
+  errorMessage String?  @map("error_message")
+  logs        Json?
+  retryCount  Int       @default(0) @map("retry_count")
+  workerHost  String?   @map("worker_host")
+
+  source MonitoringSource @relation(fields: [sourceId], references: [id], onDelete: Cascade)
+
+  @@index([sourceId, startedAt(sort: Desc)])
+  @@map("scrape_histories")
+}
+
+model DiscordNotification {
+  id             String               @id @default(cuid())
+  detectedJobId  String               @map("detected_job_id")
+  webhookUrl     String               @map("webhook_url")
+  status         DiscordDeliveryStatus @default(PENDING)
+  sentAt         DateTime?            @map("sent_at")
+  responseLog    Json?                @map("response_log")
+
+  job DetectedJob @relation(fields: [detectedJobId], references: [id], onDelete: Cascade)
+
+  @@index([status, sentAt(sort: Desc)])
+  @@map("discord_notifications")
+}
+
+model AiAnalysis {
+  id                  String @id @default(cuid())
+  detectedJobId       String @unique @map("detected_job_id")
+  relevanceScore      Float  @default(0) @map("relevance_score")
+  profitabilityScore Float  @default(0) @map("profitability_score")
+  spamScore           Float  @default(0) @map("spam_score")
+  urgencyScore        Float  @default(0) @map("urgency_score")
+  analysisJson       Json    @default("{}") @map("analysis_json")
+
+  job DetectedJob @relation(fields: [detectedJobId], references: [id], onDelete: Cascade)
+
+  @@map("ai_analysis")
+}
+
+model AppSetting {
+  id        String @id @default(cuid())
+  key       String @unique
+  value     Json
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@map("app_settings")
+}

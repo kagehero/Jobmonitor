@@ -1,0 +1,9 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    ports:
+      - "${DASHBOARD_PG_PORT:-5434}:5432"
+    environment:
+      POSTGRES_USER: jobhunter
+      POSTGRES_PASSWORD: jobhunter
+      POSTGRES_DB: jobhunter_dashboard

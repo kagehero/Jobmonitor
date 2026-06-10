@@ -1,0 +1,57 @@
+@import "tailwindcss";
+
+@custom-variant dark (&:where(.dark, .dark *));
+
+:root {
+  --radius: 0.5rem;
+}
+
+@layer base {
+  * {
+    @apply border-zinc-200 dark:border-zinc-800;
+  }
+  body {
+    @apply min-h-screen bg-zinc-50 text-zinc-900 antialiased dark:bg-zinc-950 dark:text-zinc-50;
+  }
+}
+
+@keyframes app-nav-progress-slide {
+  0% {
+    transform: translateX(-100%);
+    opacity: 1;
+  }
+  65% {
+    opacity: 0.92;
+  }
+  100% {
+    transform: translateX(220%);
+    opacity: 0;
+  }
+}
+
+.app-nav-progress-shimmer {
+  width: 40%;
+  min-width: 8rem;
+  height: 100%;
+  margin-left: 0;
+  background: linear-gradient(
+    90deg,
+    transparent,
+    rgb(39 39 42 / 0.25),
+    rgb(63 63 70 / 0.85),
+    rgb(39 39 42 / 0.25),
+    transparent
+  );
+  animation: app-nav-progress-slide 0.95s cubic-bezier(0.4, 0, 0.2, 1) infinite;
+}
+
+.dark .app-nav-progress-shimmer {
+  background: linear-gradient(
+    90deg,
+    transparent,
+    rgb(255 255 255 / 0.08),
+    rgb(244 244 245 / 0.55),
+    rgb(255 255 255 / 0.08),
+    transparent
+  );
+}
