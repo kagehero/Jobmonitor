@@ -7,6 +7,7 @@ import {
   ChevronRightIcon,
   ChevronsLeftIcon,
   ChevronsRightIcon,
+  ClockIcon,
   CopyIcon,
   ExternalLinkIcon,
   FilterIcon,
@@ -15,7 +16,6 @@ import {
   MoreHorizontalIcon,
   PackageIcon,
   PercentIcon,
-  RefreshCwIcon,
   SparklesIcon,
   StarIcon,
   UsersIcon,
@@ -101,6 +101,8 @@ type JobsListPayload = {
   freshInWindow: number;
   totalPages: number;
 };
+
+type RowStats = JobLiveStats | { loading: true } | { error: string };
 
 function getRawRecord(raw: unknown): Record<string, unknown> | null {
   if (!raw || typeof raw !== "object") return null;
@@ -727,10 +729,40 @@ export default function JobsPage() {
   const [pageSize, setPageSize] = React.useState(20);
   const [selected, setSelected] = React.useState<Record<string, boolean>>({});
   const [detail, setDetail] = React.useState<JobRow | null>(null);
+  const [liveStatsMap, setLiveStatsMap] = React.useState<Record<string, RowStats>>({});
+  const [bulkFetching, setBulkFetching] = React.useState(false);
 
   React.useEffect(() => {
     setPage(1);
+    setLiveStatsMap({});
   }, [q, boardPf, boardCat, sort]);
+
+  const handleBulkLiveStats = async () => {
+    if (bulkFetching || listJobs.length === 0) return;
+    setBulkFetching(true);
+    setLiveStatsMap((prev) => {
+      const next = { ...prev };
+      for (const job of listJobs) next[job.id] = { loading: true };
+      return next;
+    });
+    const queue = [...listJobs];
+    const worker = async () => {
+      while (queue.length > 0) {
+        const job = queue.shift()!;
+        try {
+          const res = await fetch(`/api/detected-jobs/${job.id}/live-stats`);
+          const json = await res.json();
+          if (!json.ok) throw new Error(json.error.message);
+          setLiveStatsMap((prev) => ({ ...prev, [job.id]: json.data as JobLiveStats }));
+        } catch (e) {
+          const msg = e instanceof Error ? e.message : "エラー";
+          setLiveStatsMap((prev) => ({ ...prev, [job.id]: { error: msg } }));
+        }
+      }
+    };
+    await Promise.all(Array.from({ length: Math.min(3, listJobs.length) }, worker));
+    setBulkFetching(false);
+  };
 
   const qs = React.useMemo(() => {
     const u = new URLSearchParams();
@@ -833,6 +865,20 @@ export default function JobsPage() {
           <Button
             size="sm"
             variant="outline"
+            disabled={bulkFetching || listJobs.length === 0}
+            onClick={() => void handleBulkLiveStats()}
+            className="gap-1.5"
+          >
+            {bulkFetching ? (
+              <LoaderCircleIcon className="size-3.5 animate-spin" aria-hidden />
+            ) : (
+              <UsersIcon className="size-3.5" aria-hidden />
+            )}
+            応募データ取得
+          </Button>
+          <Button
+            size="sm"
+            variant="outline"
             disabled={idsSelected.length === 0 || bulk.isPending}
             onClick={() => bulk.mutate({ ids: idsSelected, notificationSent: true })}
           >
@@ -898,7 +944,6 @@ export default function JobsPage() {
               </SelectTrigger>
               <SelectContent>
                 <SelectItem value="__default">Newest detected</SelectItem>
-                <SelectItem value="score">AI score ↓</SelectItem>
                 <SelectItem value="posted">Posted time ↓</SelectItem>
               </SelectContent>
             </Select>
@@ -942,17 +987,26 @@ export default function JobsPage() {
                     </TableHead>
                     <TableHead className="min-w-[9rem]">Client</TableHead>
                     <TableHead>Budget</TableHead>
-                    <TableHead className="hidden sm:table-cell">AI</TableHead>
-                    <TableHead className="w-[112px] text-right">Actions</TableHead>
+                    <TableHead className="hidden min-w-[7rem] sm:table-cell">
+                      <span className="flex items-center gap-1">
+                        <ClockIcon className="size-3 shrink-0 text-zinc-400" aria-hidden />
+                        投稿時間
+                      </span>
+                    </TableHead>
+                    <TableHead className="min-w-[5rem]">
+                      <span className="flex items-center gap-1">
+                        <UsersIcon className="size-3 shrink-0 text-zinc-400" aria-hidden />
+                        応募数
+                      </span>
+                    </TableHead>
+                    <TableHead className="min-w-[6rem]">残り日数</TableHead>
+                    <TableHead className="w-[80px] text-right">Actions</TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
                   {listJobs.map((job) => {
                     const detected = new Date(job.detectedAt).getTime();
                     const fresh = Date.now() - detected < NEW_MS;
-                    const raw = job.aiScoreNormalized ?? job.aiScore;
-                    const scorePct = raw != null ? (raw <= 2 ? raw * 100 : raw) : null;
-                    const parseOnly = isListingParseOnly(job.aiAnalysis);
                     return (
                       <motion.tr
                         layout
@@ -1002,24 +1056,17 @@ export default function JobsPage() {
                           {job.budget || "—"}
                         </TableCell>
                         <TableCell className="hidden sm:table-cell">
-                          {parseOnly ? (
-                            <Tooltip>
-                              <TooltipTrigger asChild>
-                                <span className="cursor-help text-xs text-zinc-500 underline decoration-dotted dark:text-zinc-400">
-                                  Listing only
-                                </span>
-                              </TooltipTrigger>
-                              <TooltipContent side="left" className="max-w-[220px] text-left">
-                                Scores are not from an LLM yet — they come from the board listing parse (often 0).
-                              </TooltipContent>
-                            </Tooltip>
-                          ) : scorePct != null ? (
-                            <Badge variant="outline" className="font-mono text-xs font-normal tabular-nums">
-                              {scorePct.toFixed(1)} pts
-                            </Badge>
-                          ) : (
-                            <span className="text-zinc-400">—</span>
-                          )}
+                          <LiveStatsCell
+                            stats={liveStatsMap[job.id]}
+                            field="posted"
+                            fallbackPostedAt={job.detectedAt}
+                          />
+                        </TableCell>
+                        <TableCell className="align-middle">
+                          <LiveStatsCell stats={liveStatsMap[job.id]} field="applicants" />
+                        </TableCell>
+                        <TableCell className="align-middle">
+                          <LiveStatsCell stats={liveStatsMap[job.id]} field="deadline" />
                         </TableCell>
                         <TableCell className="text-right">
                           <div className="flex items-center justify-end gap-0.5">
@@ -1074,7 +1121,7 @@ export default function JobsPage() {
                   })}
                   {total === 0 ? (
                     <TableRow>
-                      <TableCell colSpan={7}>
+                      <TableCell colSpan={9}>
                         <div className="flex flex-col items-center gap-2 py-14 text-center">
                           <p className="font-medium text-zinc-900 dark:text-zinc-100">No jobs in this view</p>
                           <p className="max-w-md text-sm text-zinc-500">
@@ -1209,7 +1256,6 @@ export default function JobsPage() {
                   value={detail.postedAt ? new Date(detail.postedAt).toLocaleString() : "—"}
                 />
                 <DetailRow label="Detected" value={new Date(detail.detectedAt).toLocaleString()} />
-                <LiveStatsSection jobId={detail.id} />
                 <DetailRow
                   label="AI relevance"
                   value={
@@ -1258,87 +1304,103 @@ function DetailRow(props: { label: string; value: React.ReactNode }) {
   );
 }
 
-function LiveStatsSection({ jobId }: { jobId: string }) {
-  const [stats, setStats] = React.useState<JobLiveStats | null>(null);
-  const [loading, setLoading] = React.useState(false);
-  const [fetchError, setFetchError] = React.useState<string | null>(null);
+/**
+ * 投稿時間を相対表記で表示。ホバーで正確な日時（ja-JP）。値が無ければダッシュ。
+ * `approximate` の場合は検出日時を代用した概算値であることを示す（末尾に ~ ・注記）。
+ */
+function PostedTime({ iso, approximate }: { iso: string | null; approximate?: boolean }) {
+  if (!iso) return <span className="text-zinc-400">—</span>;
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return <span className="text-zinc-400">—</span>;
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <span className="cursor-help text-sm tabular-nums text-zinc-700 dark:text-zinc-300">
+          {formatDistanceToNow(d, { addSuffix: true })}
+          {approximate ? <span className="text-zinc-400"> ~</span> : null}
+        </span>
+      </TooltipTrigger>
+      <TooltipContent side="left">
+        {d.toLocaleString("ja-JP")}
+        {approximate ? "（検出時刻・概算）" : ""}
+      </TooltipContent>
+    </Tooltip>
+  );
+}
 
-  const handleFetch = async () => {
-    setLoading(true);
-    setFetchError(null);
-    try {
-      const res = await fetch(`/api/detected-jobs/${jobId}/live-stats`);
-      const json = await res.json();
-      if (!json.ok) throw new Error(json.error.message);
-      setStats(json.data as JobLiveStats);
-    } catch (e: unknown) {
-      setFetchError(e instanceof Error ? e.message : "取得に失敗しました");
-    } finally {
-      setLoading(false);
+function LiveStatsCell({
+  stats,
+  field,
+  fallbackPostedAt,
+}: {
+  stats: RowStats | undefined;
+  field: "applicants" | "deadline" | "posted";
+  /** 検出日時（≒投稿直後）。live-stats から正確な投稿日時が取れない場合に概算として代用。 */
+  fallbackPostedAt?: string | null;
+}) {
+  if (!stats) {
+    // 未取得（ボタン押下前）: 投稿時間列は検出日時（概算）を表示しておく。
+    // 応募数・残り日数はボタンを押すまで取得できないためダッシュ。
+    if (field === "posted")
+      return <PostedTime iso={fallbackPostedAt ?? null} approximate />;
+    return <span className="text-zinc-400">—</span>;
+  }
+  if ("loading" in stats)
+    return <LoaderCircleIcon className="size-3.5 animate-spin text-zinc-400" aria-hidden />;
+  if ("error" in stats)
+    return (
+      <span className="text-[11px] text-red-500 dark:text-red-400" title={stats.error}>
+        エラー
+      </span>
+    );
+
+  if (field === "applicants") {
+    return (
+      <span className="tabular-nums text-sm">
+        {stats.applicants != null ? `${stats.applicants}件` : "—"}
+      </span>
+    );
+  }
+
+  if (field === "posted") {
+    // 投稿日時を取得できた場合（CrowdWorks）はそれを、取れない場合（Lancers）は
+    // 検出日時（≒投稿直後）を代用して、相対時間で表示する。
+    if (stats.postedAt) return <PostedTime iso={stats.postedAt} />;
+    if (fallbackPostedAt) return <PostedTime iso={fallbackPostedAt} approximate />;
+    return <span className="text-zinc-400">—</span>;
+  }
+
+  if (field === "deadline") {
+    // 締切が取れない場合（Lancers）は募集期間を残り日数列に表示する。
+    if (!stats.deadline && stats.recruitmentPeriod) {
+      return (
+        <span className="text-sm text-zinc-700 dark:text-zinc-300">
+          {stats.recruitmentPeriod}
+        </span>
+      );
     }
-  };
+  }
 
-  const deadlineLabel = (() => {
-    if (!stats?.deadline) return null;
-    if (stats.deadlineDays == null) return stats.deadline;
-    if (stats.deadlineDays < 0) return `${stats.deadline}（締め切り済み）`;
-    if (stats.deadlineDays === 0) return `${stats.deadline}（本日締め切り）`;
-    return `${stats.deadline}（残り ${stats.deadlineDays} 日）`;
-  })();
+  if (!stats.deadline) return <span className="text-zinc-400">—</span>;
+  const { deadlineDays, deadline } = stats;
+  const label =
+    deadlineDays == null
+      ? deadline
+      : deadlineDays < 0
+        ? "期限超過"
+        : deadlineDays === 0
+          ? "本日"
+          : `残り${deadlineDays}日`;
+  const cls =
+    deadlineDays != null && deadlineDays < 0
+      ? "text-sm font-medium text-red-600 dark:text-red-400"
+      : deadlineDays != null && deadlineDays <= 3
+        ? "text-sm font-medium text-amber-600 dark:text-amber-400"
+        : "text-sm text-zinc-900 dark:text-zinc-100";
 
   return (
-    <div className="rounded-lg border border-zinc-200 bg-zinc-50 p-3 dark:border-zinc-700 dark:bg-zinc-900/50">
-      <div className="flex items-center justify-between gap-3">
-        <p className="text-xs font-medium uppercase tracking-wide text-zinc-500 dark:text-zinc-400">
-          ライブデータ（案件ページ）
-        </p>
-        <Button
-          size="sm"
-          variant="outline"
-          className="h-7 gap-1.5 text-xs"
-          disabled={loading}
-          onClick={handleFetch}
-        >
-          {loading ? (
-            <LoaderCircleIcon className="size-3.5 animate-spin" aria-hidden />
-          ) : (
-            <RefreshCwIcon className="size-3.5" aria-hidden />
-          )}
-          {stats ? "再取得" : "取得"}
-        </Button>
-      </div>
-
-      {fetchError ? (
-        <p className="mt-2 text-xs text-red-600 dark:text-red-400">{fetchError}</p>
-      ) : stats ? (
-        <div className="mt-2 flex flex-wrap gap-3">
-          <span className="inline-flex items-center gap-1.5 text-sm">
-            <UsersIcon className="size-4 shrink-0 text-zinc-500 dark:text-zinc-400" aria-hidden />
-            <span className="text-xs text-zinc-500 dark:text-zinc-400">応募数</span>
-            <span className="font-semibold tabular-nums text-zinc-900 dark:text-zinc-100">
-              {stats.applicants != null ? `${stats.applicants} 件` : "—"}
-            </span>
-          </span>
-          <span className="inline-flex items-center gap-1.5 text-sm">
-            <span className="text-xs text-zinc-500 dark:text-zinc-400">締め切り</span>
-            <span
-              className={
-                stats.deadlineDays != null && stats.deadlineDays < 0
-                  ? "font-semibold text-red-600 dark:text-red-400"
-                  : stats.deadlineDays != null && stats.deadlineDays <= 3
-                    ? "font-semibold text-amber-600 dark:text-amber-400"
-                    : "font-semibold tabular-nums text-zinc-900 dark:text-zinc-100"
-              }
-            >
-              {deadlineLabel ?? "—"}
-            </span>
-          </span>
-        </div>
-      ) : (
-        <p className="mt-2 text-xs text-zinc-400 dark:text-zinc-500">
-          ボタンを押して案件ページから最新データを取得します。
-        </p>
-      )}
-    </div>
+    <span className={cls} title={deadline}>
+      {label}
+    </span>
   );
 }
