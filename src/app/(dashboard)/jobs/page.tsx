@@ -11,11 +11,14 @@ import {
   ExternalLinkIcon,
   FilterIcon,
   InfoIcon,
+  LoaderCircleIcon,
   MoreHorizontalIcon,
   PackageIcon,
   PercentIcon,
+  RefreshCwIcon,
   SparklesIcon,
   StarIcon,
+  UsersIcon,
 } from "lucide-react";
 import * as React from "react";
 import { toast } from "sonner";
@@ -50,8 +53,8 @@ import { motion } from "framer-motion";
 
 import { ClientExtrasInline, LancersClientFeedbackStrip, parseLancersFeedbackCounts, stripLancersFeedbackPhrases } from "@/components/client-extras-inline";
 import { sanitizeClientExtrasText } from "@/lib/client-extras-text";
-import { cn } from "@/lib/utils";
 import { PostingSourceBadges } from "@/components/posting-source-badges";
+import type { JobLiveStats } from "@/app/api/detected-jobs/[id]/live-stats/route";
 
 type ClientListingMeta = {
   ordersText: string | null;
@@ -1206,6 +1209,7 @@ export default function JobsPage() {
                   value={detail.postedAt ? new Date(detail.postedAt).toLocaleString() : "—"}
                 />
                 <DetailRow label="Detected" value={new Date(detail.detectedAt).toLocaleString()} />
+                <LiveStatsSection jobId={detail.id} />
                 <DetailRow
                   label="AI relevance"
                   value={
@@ -1250,6 +1254,91 @@ function DetailRow(props: { label: string; value: React.ReactNode }) {
     <div className="flex gap-6">
       <p className="w-36 shrink-0 text-xs uppercase tracking-wide text-zinc-400">{props.label}</p>
       <div className="min-w-0 flex-1 text-sm font-medium text-zinc-900 dark:text-zinc-100">{props.value}</div>
+    </div>
+  );
+}
+
+function LiveStatsSection({ jobId }: { jobId: string }) {
+  const [stats, setStats] = React.useState<JobLiveStats | null>(null);
+  const [loading, setLoading] = React.useState(false);
+  const [fetchError, setFetchError] = React.useState<string | null>(null);
+
+  const handleFetch = async () => {
+    setLoading(true);
+    setFetchError(null);
+    try {
+      const res = await fetch(`/api/detected-jobs/${jobId}/live-stats`);
+      const json = await res.json();
+      if (!json.ok) throw new Error(json.error.message);
+      setStats(json.data as JobLiveStats);
+    } catch (e: unknown) {
+      setFetchError(e instanceof Error ? e.message : "取得に失敗しました");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const deadlineLabel = (() => {
+    if (!stats?.deadline) return null;
+    if (stats.deadlineDays == null) return stats.deadline;
+    if (stats.deadlineDays < 0) return `${stats.deadline}（締め切り済み）`;
+    if (stats.deadlineDays === 0) return `${stats.deadline}（本日締め切り）`;
+    return `${stats.deadline}（残り ${stats.deadlineDays} 日）`;
+  })();
+
+  return (
+    <div className="rounded-lg border border-zinc-200 bg-zinc-50 p-3 dark:border-zinc-700 dark:bg-zinc-900/50">
+      <div className="flex items-center justify-between gap-3">
+        <p className="text-xs font-medium uppercase tracking-wide text-zinc-500 dark:text-zinc-400">
+          ライブデータ（案件ページ）
+        </p>
+        <Button
+          size="sm"
+          variant="outline"
+          className="h-7 gap-1.5 text-xs"
+          disabled={loading}
+          onClick={handleFetch}
+        >
+          {loading ? (
+            <LoaderCircleIcon className="size-3.5 animate-spin" aria-hidden />
+          ) : (
+            <RefreshCwIcon className="size-3.5" aria-hidden />
+          )}
+          {stats ? "再取得" : "取得"}
+        </Button>
+      </div>
+
+      {fetchError ? (
+        <p className="mt-2 text-xs text-red-600 dark:text-red-400">{fetchError}</p>
+      ) : stats ? (
+        <div className="mt-2 flex flex-wrap gap-3">
+          <span className="inline-flex items-center gap-1.5 text-sm">
+            <UsersIcon className="size-4 shrink-0 text-zinc-500 dark:text-zinc-400" aria-hidden />
+            <span className="text-xs text-zinc-500 dark:text-zinc-400">応募数</span>
+            <span className="font-semibold tabular-nums text-zinc-900 dark:text-zinc-100">
+              {stats.applicants != null ? `${stats.applicants} 件` : "—"}
+            </span>
+          </span>
+          <span className="inline-flex items-center gap-1.5 text-sm">
+            <span className="text-xs text-zinc-500 dark:text-zinc-400">締め切り</span>
+            <span
+              className={
+                stats.deadlineDays != null && stats.deadlineDays < 0
+                  ? "font-semibold text-red-600 dark:text-red-400"
+                  : stats.deadlineDays != null && stats.deadlineDays <= 3
+                    ? "font-semibold text-amber-600 dark:text-amber-400"
+                    : "font-semibold tabular-nums text-zinc-900 dark:text-zinc-100"
+              }
+            >
+              {deadlineLabel ?? "—"}
+            </span>
+          </span>
+        </div>
+      ) : (
+        <p className="mt-2 text-xs text-zinc-400 dark:text-zinc-500">
+          ボタンを押して案件ページから最新データを取得します。
+        </p>
+      )}
     </div>
   );
 }
