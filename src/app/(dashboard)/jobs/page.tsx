@@ -3,25 +3,20 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   ArrowUpDownIcon,
-  CheckCircle2Icon,
   ChevronLeftIcon,
   ChevronRightIcon,
   ChevronsLeftIcon,
   ChevronsRightIcon,
-  Clock3Icon,
   CopyIcon,
   ExternalLinkIcon,
   FilterIcon,
-  HelpCircleIcon,
   InfoIcon,
   MoreHorizontalIcon,
   PackageIcon,
   PercentIcon,
   SparklesIcon,
   StarIcon,
-  XCircleIcon,
 } from "lucide-react";
-import type { LucideIcon } from "lucide-react";
 import * as React from "react";
 import { toast } from "sonner";
 import { formatDistanceToNow } from "date-fns";
@@ -589,79 +584,6 @@ function isListingParseOnly(ai: JobRow["aiAnalysis"]): boolean {
   return typeof note === "string" && note.toLowerCase().includes("placeholder");
 }
 
-type NotifyDeliveryMeta = {
-  label: string;
-  Icon: LucideIcon;
-  badgeClass: string;
-  tooltip: string;
-};
-
-function notifyDeliveryMeta(status: string): NotifyDeliveryMeta {
-  const u = status.toUpperCase();
-  if (u === "SENT") {
-    return {
-      label: "Sent",
-      Icon: CheckCircle2Icon,
-      badgeClass:
-        "border-emerald-600/50 bg-emerald-500/20 text-emerald-900 shadow-sm dark:border-emerald-500/40 dark:bg-emerald-500/15 dark:text-emerald-100",
-      tooltip: "Discord accepted the webhook payload for this job (delivery recorded as sent).",
-    };
-  }
-  if (u === "FAILED") {
-    return {
-      label: "Failed",
-      Icon: XCircleIcon,
-      badgeClass:
-        "border-red-500/60 bg-red-500/15 text-red-800 dark:border-red-400/50 dark:bg-red-950/50 dark:text-red-200",
-      tooltip:
-        "Discord delivery failed (network, 429, invalid webhook, etc.). Check the Discord page for logs or your monitor output.",
-    };
-  }
-  if (u === "PENDING") {
-    return {
-      label: "Pending",
-      Icon: Clock3Icon,
-      badgeClass:
-        "border-amber-500/50 bg-amber-500/20 text-amber-950 shadow-sm dark:border-amber-400/45 dark:bg-amber-500/15 dark:text-amber-100",
-      tooltip:
-        "No successful Discord delivery is recorded yet — e.g. still queued, skipped, or monitor did not post to Discord for this row.",
-    };
-  }
-  return {
-    label: status || "Unknown",
-    Icon: HelpCircleIcon,
-    badgeClass: "border-zinc-400/40 bg-zinc-500/15 text-zinc-800 dark:border-zinc-600/50 dark:bg-zinc-800/60 dark:text-zinc-200",
-    tooltip: `Status code «${status}» — compare with Discord delivery records.`,
-  };
-}
-
-function NotifyDeliveryBadge({ status }: { status: string }) {
-  const m = notifyDeliveryMeta(status);
-  const Icon = m.Icon;
-  return (
-    <Tooltip>
-      <TooltipTrigger asChild>
-        <button
-          type="button"
-          className="inline-flex max-w-full cursor-help text-left outline-none focus-visible:ring-2 focus-visible:ring-sky-500/70 focus-visible:ring-offset-2 focus-visible:ring-offset-white dark:focus-visible:ring-offset-zinc-950"
-          aria-label={`Discord notification: ${m.label}. ${m.tooltip}`}
-        >
-          <Badge
-            variant="outline"
-            className={cn("h-7 gap-1.5 border px-2 py-0 text-[11px] font-semibold leading-none", m.badgeClass)}
-          >
-            <Icon className="size-3.5 shrink-0 opacity-90" aria-hidden />
-            <span className="truncate">{m.label}</span>
-          </Badge>
-        </button>
-      </TooltipTrigger>
-      <TooltipContent side="top" className="max-w-[280px] text-left text-xs leading-relaxed">
-        {m.tooltip}
-      </TooltipContent>
-    </Tooltip>
-  );
-}
-
 function DetectedJobsPaginationBar(props: {
   rangeStart: number;
   rangeEnd: number;
@@ -902,7 +824,7 @@ export default function JobsPage() {
               </>
             ) : null}
           </div>
-          <p className="text-sm text-zinc-500">Search, prioritize, and paginate — Discord status in Notify.</p>
+          <p className="text-sm text-zinc-500">Search, prioritize, and paginate detected postings.</p>
         </div>
         <div className="flex flex-wrap gap-2">
           <Button
@@ -1018,10 +940,6 @@ export default function JobsPage() {
                     <TableHead className="min-w-[9rem]">Client</TableHead>
                     <TableHead>Budget</TableHead>
                     <TableHead className="hidden sm:table-cell">AI</TableHead>
-                    <TableHead className="min-w-[5.5rem]">
-                      <span className="block">Notify</span>
-                      <span className="block text-[10px] font-normal normal-case text-zinc-500 dark:text-zinc-400">Discord</span>
-                    </TableHead>
                     <TableHead className="w-[112px] text-right">Actions</TableHead>
                   </TableRow>
                 </TableHeader>
@@ -1100,9 +1018,6 @@ export default function JobsPage() {
                             <span className="text-zinc-400">—</span>
                           )}
                         </TableCell>
-                        <TableCell className="align-middle">
-                          <NotifyDeliveryBadge status={job.notificationStatus} />
-                        </TableCell>
                         <TableCell className="text-right">
                           <div className="flex items-center justify-end gap-0.5">
                             <Tooltip>
@@ -1156,7 +1071,7 @@ export default function JobsPage() {
                   })}
                   {total === 0 ? (
                     <TableRow>
-                      <TableCell colSpan={8}>
+                      <TableCell colSpan={7}>
                         <div className="flex flex-col items-center gap-2 py-14 text-center">
                           <p className="font-medium text-zinc-900 dark:text-zinc-100">No jobs in this view</p>
                           <p className="max-w-md text-sm text-zinc-500">
@@ -1291,10 +1206,6 @@ export default function JobsPage() {
                   value={detail.postedAt ? new Date(detail.postedAt).toLocaleString() : "—"}
                 />
                 <DetailRow label="Detected" value={new Date(detail.detectedAt).toLocaleString()} />
-                <DetailRow
-                  label="Discord notify"
-                  value={`${notifyDeliveryMeta(detail.notificationStatus).label} — ${detail.notificationStatus}`}
-                />
                 <DetailRow
                   label="AI relevance"
                   value={

@@ -4,7 +4,6 @@ import {
   LayersIcon,
   LineChartIcon,
   SearchIcon,
-  SettingsIcon,
   BotIcon,
   CommandIcon,
   UsersRoundIcon,
@@ -29,7 +28,6 @@ const nav = [
   { href: "/jobs", label: "Jobs", icon: SearchIcon },
   { href: "/clients", label: "Client analysis", icon: UsersRoundIcon },
   { href: "/ai", label: "AI Analysis", icon: BotIcon },
-  { href: "/settings", label: "Settings", icon: SettingsIcon },
 ];
 
 export function DashboardShell({ children }: { children: React.ReactNode }) {

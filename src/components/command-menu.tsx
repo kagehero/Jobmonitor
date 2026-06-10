@@ -6,7 +6,6 @@ import {
   LayersIcon,
   LineChartIcon,
   SearchIcon,
-  SettingsIcon,
   BotIcon,
   UsersRoundIcon,
 } from "lucide-react";
@@ -23,7 +22,6 @@ const links = [
   { label: "Jobs", href: "/jobs", icon: SearchIcon },
   { label: "Client analysis", href: "/clients", icon: UsersRoundIcon },
   { label: "AI Analysis", href: "/ai", icon: BotIcon },
-  { label: "Settings", href: "/settings", icon: SettingsIcon },
 ];
 
 export function CommandMenu() {
