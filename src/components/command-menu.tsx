@@ -7,9 +7,7 @@ import {
   LineChartIcon,
   SearchIcon,
   SettingsIcon,
-  BellIcon,
   BotIcon,
-  HistoryIcon,
   UsersRoundIcon,
 } from "lucide-react";
 import { useRouter } from "next/navigation";
@@ -24,9 +22,7 @@ const links = [
   { label: "Sources", href: "/sources", icon: LayersIcon },
   { label: "Jobs", href: "/jobs", icon: SearchIcon },
   { label: "Client analysis", href: "/clients", icon: UsersRoundIcon },
-  { label: "History", href: "/history", icon: HistoryIcon },
   { label: "AI Analysis", href: "/ai", icon: BotIcon },
-  { label: "Discord", href: "/discord", icon: BellIcon },
   { label: "Settings", href: "/settings", icon: SettingsIcon },
 ];
 

@@ -5,9 +5,7 @@ import {
   LineChartIcon,
   SearchIcon,
   SettingsIcon,
-  BellIcon,
   BotIcon,
-  HistoryIcon,
   CommandIcon,
   UsersRoundIcon,
 } from "lucide-react";
@@ -30,9 +28,7 @@ const nav = [
   { href: "/sources", label: "Sources", icon: LayersIcon },
   { href: "/jobs", label: "Jobs", icon: SearchIcon },
   { href: "/clients", label: "Client analysis", icon: UsersRoundIcon },
-  { href: "/history", label: "History", icon: HistoryIcon },
   { href: "/ai", label: "AI Analysis", icon: BotIcon },
-  { href: "/discord", label: "Discord", icon: BellIcon },
   { href: "/settings", label: "Settings", icon: SettingsIcon },
 ];
 
