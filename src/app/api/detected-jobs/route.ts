@@ -15,7 +15,7 @@ export const dynamic = "force-dynamic";
 const FRESH_WINDOW_MS = 2 * 60 * 60 * 1000;
 
 type BoardPf = "lw" | "cw";
-type BoardCat = "system" | "web";
+type BoardCat = "system" | "web" | "ai";
 
 function normalizeBoardPf(raw: string | null | undefined): BoardPf | undefined {
   const v = raw?.trim().toLowerCase();
@@ -30,6 +30,7 @@ function normalizeBoardCat(raw: string | null | undefined): BoardCat | undefined
   if (!v) return undefined;
   if (v === "system") return "system";
   if (v === "web") return "web";
+  if (v === "ai") return "ai";
   return undefined;
 }
 
@@ -44,24 +45,13 @@ function boardPlatformPredicate(pf: BoardPf): Prisma.DetectedJobWhereInput {
   };
 }
 
-/** Lancers は ``/work/search/{slug}``、CrowdWorks は ``category_id=226|230``（システム / Web）。 */
+/**
+ * Lancers は ``/work/search/{slug}``、CrowdWorks は ``category_id=226|230|311``（システム / Web / AI）。
+ * AI は CrowdWorks 専用カテゴリ（Lancers に対応 slug なし）のため、CrowdWorks 述語のみを返す。
+ */
 function boardCategoryPredicate(cat: BoardCat, pf?: BoardPf): Prisma.DetectedJobWhereInput {
-  const lSlug = cat === "system" ? "system" : "web";
-  const cwId = cat === "system" ? "226" : "230";
+  const cwId = cat === "system" ? "226" : cat === "web" ? "230" : "311";
 
-  const lancersPred: Prisma.DetectedJobWhereInput = {
-    AND: [
-      { source: { platform: { contains: "lancers", mode: "insensitive" } } },
-      {
-        source: {
-          url: {
-            contains: `/work/search/${lSlug}`,
-            mode: "insensitive",
-          },
-        },
-      },
-    ],
-  };
   const crowdPred: Prisma.DetectedJobWhereInput = {
     AND: [
       { source: { platform: { contains: "crowd", mode: "insensitive" } } },
@@ -69,6 +59,24 @@ function boardCategoryPredicate(cat: BoardCat, pf?: BoardPf): Prisma.DetectedJob
         source: {
           url: {
             contains: `category_id=${cwId}`,
+            mode: "insensitive",
+          },
+        },
+      },
+    ],
+  };
+
+  // AI は CrowdWorks のみ。プラットフォーム指定に関わらず CrowdWorks 述語を使う。
+  if (cat === "ai") return crowdPred;
+
+  const lSlug = cat === "system" ? "system" : "web";
+  const lancersPred: Prisma.DetectedJobWhereInput = {
+    AND: [
+      { source: { platform: { contains: "lancers", mode: "insensitive" } } },
+      {
+        source: {
+          url: {
+            contains: `/work/search/${lSlug}`,
             mode: "insensitive",
           },
         },

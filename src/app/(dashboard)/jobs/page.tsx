@@ -83,7 +83,7 @@ const KEYWORD_SELECTION_STORAGE_KEY = "jobs:selectedKeywords";
 type JobsFilters = {
   q: string;
   boardPf: "" | "lw" | "cw";
-  boardCat: "" | "system" | "web";
+  boardCat: "" | "system" | "web" | "ai";
   statusFilter: JobStatusValue[];
   selectedKeywords: string[];
   /** 見積（予算）レンジ（円）。空文字 = 未指定。 */
@@ -108,7 +108,9 @@ function parseFiltersFromParams(sp: URLSearchParams): JobsFilters {
 
   const boardCatRaw = sp.get("boardCat");
   const boardCat: JobsFilters["boardCat"] =
-    boardCatRaw === "system" || boardCatRaw === "web" ? boardCatRaw : "";
+    boardCatRaw === "system" || boardCatRaw === "web" || boardCatRaw === "ai"
+      ? boardCatRaw
+      : "";
 
   const statusFilter = (sp.get("status") ?? "")
     .split(",")
@@ -864,7 +866,7 @@ function JobsPageInner() {
 
   const [q, setQ] = React.useState(initialFilters.q);
   const [boardPf, setBoardPf] = React.useState<"" | "lw" | "cw">(initialFilters.boardPf);
-  const [boardCat, setBoardCat] = React.useState<"" | "system" | "web">(initialFilters.boardCat);
+  const [boardCat, setBoardCat] = React.useState<"" | "system" | "web" | "ai">(initialFilters.boardCat);
   const [statusFilter, setStatusFilter] = React.useState<JobStatusValue[]>(
     initialFilters.statusFilter,
   );
@@ -1269,7 +1271,7 @@ function JobsPageInner() {
             <CardTitle className="flex items-center gap-2 text-base">
               <FilterIcon className="size-4 text-zinc-500" /> Filters
             </CardTitle>
-            <CardDescription>サーバー側でキーワード、プラットフォーム（LW／CW）、カテゴリ（システム／Web）、並び順を適用します。</CardDescription>
+            <CardDescription>サーバー側でキーワード、プラットフォーム（LW／CW）、カテゴリ（システム／Web／AI）、並び順を適用します。</CardDescription>
           </div>
           <div className="flex flex-1 flex-col gap-3 sm:flex-row sm:flex-wrap xl:justify-end">
             <Input value={q} onChange={(e) => setQ(e.target.value)} placeholder="キーワード…" className="sm:max-w-xs" />
@@ -1291,11 +1293,13 @@ function JobsPageInner() {
             </Select>
             <Select
               value={boardCat === "" ? "__cat_all__" : boardCat}
-              onValueChange={(v) => setBoardCat(v === "__cat_all__" ? "" : (v as "system" | "web"))}
+              onValueChange={(v) =>
+                setBoardCat(v === "__cat_all__" ? "" : (v as "system" | "web" | "ai"))
+              }
             >
               <SelectTrigger
                 className="h-9 w-auto min-w-[6.75rem] max-w-none shrink-0 gap-2 overflow-hidden sm:min-w-[7rem]"
-                aria-label="求人カテゴリ: すべて／システム／Web（掲載元URLに基づく）"
+                aria-label="求人カテゴリ: すべて／システム／Web／AI（掲載元URLに基づく）"
               >
                 <SelectValue placeholder="すべて" className="min-w-0 flex-1 truncate text-left" />
               </SelectTrigger>
@@ -1303,6 +1307,7 @@ function JobsPageInner() {
                 <SelectItem value="__cat_all__">すべて</SelectItem>
                 <SelectItem value="system">システム</SelectItem>
                 <SelectItem value="web">Web</SelectItem>
+                <SelectItem value="ai">AI</SelectItem>
               </SelectContent>
             </Select>
             <Popover>
