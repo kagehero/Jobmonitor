@@ -61,7 +61,8 @@ const PLATFORM_SERIES = [
   { dataKey: "pl_crowdworks", label: "CrowdWorks（CW）", fill: "#a78bfa" },
 ] as const;
 
-const CATEGORY_STACK_COLORS = ["#fb7185", "#34d399"];
+// system / web / ai の順（dashboard-stats CATEGORY_STACK_META と対応）。
+const CATEGORY_STACK_COLORS = ["#fb7185", "#34d399", "#fbbf24"];
 
 export default function OverviewPage() {
   const { data, isLoading } = useQuery({

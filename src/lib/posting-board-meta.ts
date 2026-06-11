@@ -24,10 +24,11 @@ export const LANCERS_SLUG_LABEL: Record<string, string> = {
   semiconductor: "半導体",
 };
 
-/** CrowdWorks 検索 ``category_id``（monitor のデフォルト 226/230 など）。未知は #ID で示す。 */
+/** CrowdWorks 検索 ``category_id``（monitor のデフォルト 226/230/311 など）。未知は #ID で示す。 */
 export const CROWDWORKS_CATEGORY_LABEL: Record<string, string> = {
   "226": "システム",
   "230": "Web",
+  "311": "AI",
 };
 
 export function abbreviatePostingPlatform(platformRaw: string): { abbr: string; tonesKey: string; fullJa: string } {
@@ -43,16 +44,18 @@ export function abbreviatePostingPlatform(platformRaw: string): { abbr: string; 
   return { abbr, tonesKey: s || "unknown", fullJa: s || "不明" };
 }
 
-/** 求人ボード上の一覧を「システム / Web / その他」へまとめる桶。 */
-export type JobBoardCategoryTriple = "system" | "web" | "misc";
+/** 求人ボード上の一覧を「システム / Web / AI / その他」へまとめる桶。 */
+export type JobBoardCategoryTriple = "system" | "web" | "ai" | "misc";
 
 export const JOB_BOARD_TRIPLE_LABEL: Record<JobBoardCategoryTriple, string> = {
   system: "システム",
   web: "Web",
+  ai: "AI",
   misc: "その他",
 };
 
 function tripleFromLancersPath(pathname: string): JobBoardCategoryTriple {
+  // Lancers には AI 専用スラグが無いため system/web のみ判定（AI は CrowdWorks 専用）。
   const segs = pathname.replace(/^\//u, "").split("/").filter(Boolean);
   let slug = "";
   if (segs[0] === "work" && segs[1] === "search" && segs[2]) slug = segs[2].replace(/^\s+|\s+$/gu, "");
@@ -65,13 +68,14 @@ function tripleFromCrowdWorksSearch(u: URL): JobBoardCategoryTriple {
   const id = u.searchParams.get("category_id") ?? u.searchParams.get("categoryId");
   if (id === "226") return "system";
   if (id === "230") return "web";
+  if (id === "311") return "ai";
   return "misc";
 }
 
 /**
  * 監視URL（および解釈不能時のクエリ文字列）から一覧の大分類桶を決める。
  * Lancers: `/work/search/system` / `web` のみシステム・Web、それ以外はその他。
- * CrowdWorks: `category_id` 226 / 230 のみシステム・Web、それ以外はその他。
+ * CrowdWorks: `category_id` 226 / 230 / 311 をシステム・Web・AI、それ以外はその他。
  */
 export function jobBoardCategoryTriple(platformRaw: string, listingUrlRaw: string | undefined | null): JobBoardCategoryTriple {
   const u = safeListingUrl(listingUrlRaw);
@@ -83,18 +87,21 @@ export function jobBoardCategoryTriple(platformRaw: string, listingUrlRaw: strin
   const raw = (listingUrlRaw ?? "").trim();
   if (/[?&#](?:category_id|categoryId)=226\b/i.test(raw)) return "system";
   if (/[?&#](?:category_id|categoryId)=230\b/i.test(raw)) return "web";
+  if (/[?&#](?:category_id|categoryId)=311\b/i.test(raw)) return "ai";
   if (/\/work\/search\/system(?:\/|$|\?|\#)/i.test(raw)) return "system";
   if (/\/work\/search\/web(?:\/|$|\?|\#)/i.test(raw)) return "web";
   return "misc";
 }
 
-/** Recharts 用の安定キー（大分類3桶）。 */
+/** Recharts 用の安定キー（大分類桶）。 */
 export function postingCategoryTripleChartKey(triple: JobBoardCategoryTriple): string {
   switch (triple) {
     case "system":
       return "cn_cat_system";
     case "web":
       return "cn_cat_web";
+    case "ai":
+      return "cn_cat_ai";
     default:
       return "cn_cat_other";
   }
@@ -170,7 +177,7 @@ export function postingBoardCategory(platformRaw: string, listingUrlRaw: string 
       id != null ? (CROWDWORKS_CATEGORY_LABEL[id] ?? `#${id}`) : pathSuffixHint(u.pathname);
     const idPart =
       id != null
-        ? `category_id=${id}（標準では 226=システム開発、230=Web制作）`
+        ? `category_id=${id}（標準では 226=システム開発、230=Web制作、311=AI）`
         : "クエリ category_id が見つからない場合のパス推定";
 
     return {

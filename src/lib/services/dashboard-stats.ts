@@ -8,6 +8,7 @@ const TREND_DAYS = 7;
 const CATEGORY_STACK_META: CategoryStackMetaItem[] = [
   { dataKey: postingCategoryTripleChartKey("system"), label: "システム" },
   { dataKey: postingCategoryTripleChartKey("web"), label: "Web" },
+  { dataKey: postingCategoryTripleChartKey("ai"), label: "AI" },
 ];
 
 export type DashboardJobsPerDayRow = {
@@ -135,7 +136,7 @@ export async function getDashboardStatsBundle() {
     else if (plat === "crowdworks") b.cw++;
 
     const triple = jobBoardCategoryTriple(job.source.platform, job.source.url);
-    if (triple === "system" || triple === "web") {
+    if (triple === "system" || triple === "web" || triple === "ai") {
       const ck = postingCategoryTripleChartKey(triple);
       b.cat.set(ck, (b.cat.get(ck) ?? 0) + 1);
     }
