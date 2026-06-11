@@ -45,6 +45,12 @@ export type ClientAnalysisRow = {
    * 取得できない場合は null（ソートでは欠損扱い）。
    */
   recruitmentAchievement: number | null;
+  /** 事業主体（個人/法人）。ClientProfile から付与（無ければ UNKNOWN）。 */
+  entityType: "UNKNOWN" | "INDIVIDUAL" | "CORPORATE";
+  /** 表示中の種別が手動確定か自動推定か。 */
+  entitySource: "manual" | "auto";
+  /** 自動推定の確度（0–1）。 */
+  entityConfidence: number;
 };
 
 /** Canonical path for grouping (``/client/foo``, ``/public/employers/123``). */
@@ -269,6 +275,10 @@ export function aggregateClientAnalysis(rows: DetectedJobClientInput[]): {
       extrasFull: c.extrasFull,
       avatarUrl: c.avatarUrl,
       recruitmentAchievement,
+      // 既定値。API 側で ClientProfile を突き合わせて上書きする。
+      entityType: "UNKNOWN" as const,
+      entitySource: "auto" as const,
+      entityConfidence: 0,
     };
   });
 

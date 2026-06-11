@@ -3,7 +3,12 @@ import { DiscordDeliveryStatus, Prisma } from "@prisma/client";
 import { err, ok } from "@/lib/api-response";
 import { db } from "@/lib/db";
 import { ingestPollSchema } from "@/lib/schemas/ingest";
-import { clientSnapshotFromMonitorRaw } from "@/lib/monitor-ingest-client";
+import {
+  clientSnapshotFromMonitorRaw,
+  entitySignalsFromMonitorRaw,
+} from "@/lib/monitor-ingest-client";
+import { normalizeProfileKey } from "@/lib/client-analysis";
+import { guessClientEntity } from "@/lib/client-entity";
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 60;
@@ -44,8 +49,10 @@ export async function POST(req: Request) {
     await db.$transaction(
       async (tx) => {
       const sourceByUrl = new Map<string, { id: string }>();
+      const platformByUrl = new Map<string, string>();
 
       for (const L of body.listings) {
+        platformByUrl.set(L.listingUrl, L.platform);
         const src = await tx.monitoringSource.upsert({
           where: { url: L.listingUrl },
           create: {
@@ -86,6 +93,14 @@ export async function POST(req: Request) {
         });
       }
 
+      // クライアント単位の事業主体（個人/法人）推定。profileKey ごとに最良候補を集約して後でまとめて upsert。
+      type ProfileCandidate = {
+        platform: string;
+        displayName: string;
+        signals: ReturnType<typeof entitySignalsFromMonitorRaw>;
+      };
+      const profileCandidates = new Map<string, ProfileCandidate>();
+
       for (const j of body.detectedJobs) {
         const src = sourceByUrl.get(j.listingUrl);
         if (!src) continue;
@@ -93,6 +108,32 @@ export async function POST(req: Request) {
         const tags = [j.categoryLabel].filter(Boolean);
         const raw = (j.raw ?? {}) as Prisma.InputJsonValue;
         const snap = clientSnapshotFromMonitorRaw(j.raw ?? {});
+
+        // 事業主体推定: プロフィールキー（無ければ skip — name-only は集約キーが不安定なため）。
+        const profileKey = normalizeProfileKey(snap.clientProfileUrl);
+        if (profileKey) {
+          const signals = entitySignalsFromMonitorRaw(j.raw ?? {});
+          const prev = profileCandidates.get(profileKey);
+          // シグナル（official 等）が取れた候補を優先。名前は長い方を採用。
+          const hasSignal =
+            signals.isOfficialAccount != null ||
+            signals.isCertifiedEmployer != null ||
+            signals.identityVerified != null;
+          const prevHasSignal =
+            prev != null &&
+            (prev.signals.isOfficialAccount != null ||
+              prev.signals.isCertifiedEmployer != null ||
+              prev.signals.identityVerified != null);
+          if (!prev || (hasSignal && !prevHasSignal)) {
+            profileCandidates.set(profileKey, {
+              platform: platformByUrl.get(j.listingUrl) ?? "",
+              displayName: j.clientName?.trim() || prev?.displayName || "",
+              signals,
+            });
+          } else if (j.clientName?.trim() && j.clientName.trim().length > prev.displayName.length) {
+            prev.displayName = j.clientName.trim();
+          }
+        }
 
         const jobRow = await tx.detectedJob.upsert({
           where: { projectUrl: j.detailUrl },
@@ -174,6 +215,62 @@ export async function POST(req: Request) {
                 } as Prisma.InputJsonValue),
           },
         });
+      }
+
+      // クライアント事業主体（個人/法人）の自動推定を ClientProfile に反映。
+      // manualOverride=true の行は手動確定値を尊重し、entityType を上書きしない。
+      for (const [profileKey, cand] of profileCandidates) {
+        const guess = guessClientEntity(cand.displayName, cand.signals);
+        const signalsJson = {
+          isOfficialAccount: cand.signals.isOfficialAccount,
+          isCertifiedEmployer: cand.signals.isCertifiedEmployer,
+          identityVerified: cand.signals.identityVerified,
+          reason: guess.reason,
+        } as Prisma.InputJsonValue;
+
+        const existing = await tx.clientProfile.findUnique({
+          where: { profileKey },
+          select: { manualOverride: true },
+        });
+
+        if (!existing) {
+          await tx.clientProfile.create({
+            data: {
+              profileKey,
+              platform: cand.platform,
+              displayName: cand.displayName,
+              entityType: guess.type,
+              autoEntityType: guess.type,
+              autoConfidence: guess.confidence,
+              manualOverride: false,
+              signals: signalsJson,
+            },
+          });
+        } else if (existing.manualOverride) {
+          // 手動確定済み: 推定の参考値・シグナルのみ更新（表示用 entityType は触らない）。
+          await tx.clientProfile.update({
+            where: { profileKey },
+            data: {
+              platform: cand.platform,
+              displayName: cand.displayName,
+              autoEntityType: guess.type,
+              autoConfidence: guess.confidence,
+              signals: signalsJson,
+            },
+          });
+        } else {
+          await tx.clientProfile.update({
+            where: { profileKey },
+            data: {
+              platform: cand.platform,
+              displayName: cand.displayName,
+              entityType: guess.type,
+              autoEntityType: guess.type,
+              autoConfidence: guess.confidence,
+              signals: signalsJson,
+            },
+          });
+        }
       }
     },
       { maxWait: 15_000, timeout: Math.min(55_000, (maxDuration ?? 60) * 1000 - 5_000) },

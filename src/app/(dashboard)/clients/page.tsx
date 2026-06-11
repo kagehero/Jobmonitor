@@ -1,8 +1,9 @@
 "use client";
 
-import { useQuery } from "@tanstack/react-query";
-import { ExternalLinkIcon, SearchIcon, StarIcon, UserIcon, UsersRoundIcon } from "lucide-react";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { Building2Icon, CheckIcon, ExternalLinkIcon, SearchIcon, StarIcon, UserIcon, UsersRoundIcon } from "lucide-react";
 import * as React from "react";
+import { toast } from "sonner";
 
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -28,6 +29,7 @@ import {
 } from "@/components/ui/table";
 import { ClientExtrasInline } from "@/components/client-extras-inline";
 import { sanitizeClientExtrasText } from "@/lib/client-extras-text";
+import { clientEntityLabel, type ClientEntityType } from "@/lib/client-entity";
 import {
   absoluteProfileUrl,
   compareRecruitmentAchievementSort,
@@ -101,6 +103,7 @@ function ariaSortForColumn(activeKey: ClientSortKey, columnKey: ClientSortKey, d
 }
 
 export default function ClientsAnalysisPage() {
+  const qc = useQueryClient();
   const { data, isLoading, error } = useQuery({
     queryKey: ["client-analysis"],
     queryFn: async () => {
@@ -110,6 +113,46 @@ export default function ClientsAnalysisPage() {
       return json.data as Payload;
     },
   });
+
+  // 事業主体（個人/法人）の手動確定。profileKey 単位で保存し、一覧を再取得。
+  const entityMut = useMutation({
+    mutationFn: async (payload: {
+      profileKey: string;
+      entityType: ClientEntityType;
+      platform?: string;
+      displayName?: string;
+    }) => {
+      const res = await fetch("/api/client-analysis/entity", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      const json = await res.json();
+      if (!json.ok) throw new Error(json.error?.message ?? "保存に失敗しました");
+      return json.data;
+    },
+    onSuccess: () => {
+      toast.success("種別を保存しました");
+      void qc.invalidateQueries({ queryKey: ["client-analysis"] });
+    },
+    onError: (e: Error) => toast.error(e.message),
+  });
+
+  const handleSetEntity = React.useCallback(
+    (row: ClientAnalysisRow, entityType: ClientEntityType) => {
+      if (!row.profilePath) {
+        toast.error("プロフィールURLのあるクライアントのみ種別を保存できます");
+        return;
+      }
+      entityMut.mutate({
+        profileKey: row.profilePath,
+        entityType,
+        platform: row.platforms[0],
+        displayName: row.displayName,
+      });
+    },
+    [entityMut],
+  );
 
   const [detailRow, setDetailRow] = React.useState<ClientAnalysisRow | null>(null);
   const [clientSearchQuery, setClientSearchQuery] = React.useState("");
@@ -299,7 +342,13 @@ export default function ClientsAnalysisPage() {
                     </TableRow>
                   ) : (
                     displayedClients.map((c) => (
-                      <ClientTableRow key={c.key} row={c} onOpenDetail={() => setDetailRow(c)} />
+                      <ClientTableRow
+                        key={c.key}
+                        row={c}
+                        onOpenDetail={() => setDetailRow(c)}
+                        onSetEntity={handleSetEntity}
+                        entityPending={entityMut.isPending}
+                      />
                     ))
                   )}
                 </TableBody>
@@ -394,8 +443,33 @@ function ClientDetailModal({
             </DialogHeader>
 
             <div className="flex flex-wrap gap-2">
+              <span
+                className={cn(
+                  "inline-flex items-center gap-1 rounded-md border px-2 py-0.5 text-xs",
+                  entityBadgeClass(row.entityType),
+                )}
+                title={
+                  row.entitySource === "manual"
+                    ? "手動で確定済み"
+                    : row.entityType === "UNKNOWN"
+                      ? "自動推定できませんでした"
+                      : `自動推定（確度 ${Math.round((row.entityConfidence ?? 0) * 100)}%）`
+                }
+              >
+                {row.entityType === "CORPORATE" ? (
+                  <Building2Icon className="size-3 shrink-0" aria-hidden />
+                ) : row.entityType === "INDIVIDUAL" ? (
+                  <UserIcon className="size-3 shrink-0" aria-hidden />
+                ) : null}
+                種別: {clientEntityLabel(row.entityType)}
+                {row.entitySource === "manual" ? (
+                  <CheckIcon className="size-3 shrink-0 opacity-80" aria-hidden />
+                ) : row.entityType !== "UNKNOWN" ? (
+                  <span className="text-[10px] font-normal opacity-70">推定</span>
+                ) : null}
+              </span>
               <Badge variant="outline" className="font-normal">
-                種別: {kindLabel}
+                {kindLabel}
               </Badge>
               {[...row.platforms].sort(comparePlatformOrder).map((p) => {
                 const chip = platformChipStyles(p);
@@ -600,9 +674,94 @@ function MetricCard(props: { title: string; value: string; hint?: string }) {
   );
 }
 
-function ClientTableRow({ row, onOpenDetail }: { row: ClientAnalysisRow; onOpenDetail: () => void }) {
+/** 事業主体（個人/法人）の表示＋手動確定セル。推定は淡色、手動確定はチェック付きで示す。 */
+function entityBadgeClass(type: ClientEntityType): string {
+  if (type === "CORPORATE")
+    return "border-indigo-300/60 bg-indigo-50 text-indigo-700 dark:border-indigo-500/40 dark:bg-indigo-500/10 dark:text-indigo-300";
+  if (type === "INDIVIDUAL")
+    return "border-teal-300/60 bg-teal-50 text-teal-700 dark:border-teal-500/40 dark:bg-teal-500/10 dark:text-teal-300";
+  return "border-zinc-200 bg-zinc-50 text-zinc-500 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-400";
+}
+
+function ClientEntityCell({
+  row,
+  onSetEntity,
+  pending,
+}: {
+  row: ClientAnalysisRow;
+  onSetEntity: (row: ClientAnalysisRow, entityType: ClientEntityType) => void;
+  pending: boolean;
+}) {
+  const canEdit = Boolean(row.profilePath);
+  const isManual = row.entitySource === "manual";
+  const label = clientEntityLabel(row.entityType);
+  const confPct = Math.round((row.entityConfidence ?? 0) * 100);
+  const title = isManual
+    ? "手動で確定済み"
+    : row.entityType === "UNKNOWN"
+      ? "自動推定できませんでした（要確認）"
+      : `自動推定（確度 ${confPct}%）`;
+
+  const trigger = (
+    <span
+      className={cn(
+        "inline-flex items-center gap-1 rounded-md border px-1.5 py-0.5 text-xs",
+        entityBadgeClass(row.entityType),
+      )}
+      title={title}
+    >
+      {row.entityType === "CORPORATE" ? (
+        <Building2Icon className="size-3 shrink-0" aria-hidden />
+      ) : row.entityType === "INDIVIDUAL" ? (
+        <UserIcon className="size-3 shrink-0" aria-hidden />
+      ) : null}
+      <span className="font-medium">{label}</span>
+      {isManual ? (
+        <CheckIcon className="size-3 shrink-0 opacity-80" aria-hidden />
+      ) : row.entityType !== "UNKNOWN" ? (
+        <span className="text-[10px] font-normal opacity-70">推定</span>
+      ) : null}
+    </span>
+  );
+
+  if (!canEdit) {
+    // プロフィールURLが無いクライアントは保存キーが不安定なため編集不可（表示のみ）。
+    return <span title="プロフィールURLがあるクライアントのみ種別を保存できます">{trigger}</span>;
+  }
+
+  return (
+    <Select
+      value={row.entityType}
+      onValueChange={(v) => onSetEntity(row, v as ClientEntityType)}
+      disabled={pending}
+    >
+      <SelectTrigger
+        className="h-auto w-auto gap-1 border-0 bg-transparent p-0 shadow-none hover:opacity-80 focus:ring-0 [&>svg]:hidden"
+        aria-label={`${row.displayName} の種別を変更（現在: ${label}${isManual ? "・確定" : "・推定"}）`}
+      >
+        {trigger}
+      </SelectTrigger>
+      <SelectContent>
+        <SelectItem value="CORPORATE">法人</SelectItem>
+        <SelectItem value="INDIVIDUAL">個人</SelectItem>
+        <SelectItem value="UNKNOWN">不明（自動推定に戻す）</SelectItem>
+      </SelectContent>
+    </Select>
+  );
+}
+
+function ClientTableRow({
+  row,
+  onOpenDetail,
+  onSetEntity,
+  entityPending,
+}: {
+  row: ClientAnalysisRow;
+  onOpenDetail: () => void;
+  onSetEntity: (row: ClientAnalysisRow, entityType: ClientEntityType) => void;
+  entityPending: boolean;
+}) {
   const profileHref = absoluteProfileUrl(row.platforms, row.profilePath);
-  const kindLabel = row.kind === "profile" ? "プロフィール" : "名前のみ";
 
   return (
     <TableRow className="align-top">
@@ -618,9 +777,7 @@ function ClientTableRow({ row, onOpenDetail }: { row: ClientAnalysisRow; onOpenD
         </button>
       </TableCell>
       <TableCell>
-        <Badge variant="outline" className="font-normal">
-          {kindLabel}
-        </Badge>
+        <ClientEntityCell row={row} onSetEntity={onSetEntity} pending={entityPending} />
       </TableCell>
       <TableCell className="text-xs">
         <div className="flex flex-wrap gap-1">

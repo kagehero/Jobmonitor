@@ -38,3 +38,22 @@ export function clientSnapshotFromMonitorRaw(raw: unknown): StoredClientSnapshot
     clientAvatarUrl: avatar,
   };
 }
+
+function pickBool(...vals: unknown[]): boolean | null {
+  for (const v of vals) if (typeof v === "boolean") return v;
+  return null;
+}
+
+/** 事業主体（個人/法人）推定の補助シグナルを monitor ``raw`` から取り出す。 */
+export function entitySignalsFromMonitorRaw(raw: unknown): {
+  isOfficialAccount: boolean | null;
+  isCertifiedEmployer: boolean | null;
+  identityVerified: boolean | null;
+} {
+  const r = raw && typeof raw === "object" ? (raw as Record<string, unknown>) : {};
+  return {
+    isOfficialAccount: pickBool(r.client_is_official_account, r.clientIsOfficialAccount),
+    isCertifiedEmployer: pickBool(r.client_is_certified_employer, r.clientIsCertifiedEmployer),
+    identityVerified: pickBool(r.client_identity_verified, r.clientIdentityVerified),
+  };
+}

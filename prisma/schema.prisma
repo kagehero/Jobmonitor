@@ -29,6 +29,13 @@ enum JobStatus {
   REJECTED   // 見送り
 }
 
+/// クライアントの事業主体（個人／法人）。提案トーン・成約率の判断材料。
+enum ClientEntityType {
+  UNKNOWN     // 不明（推定不可）
+  INDIVIDUAL  // 個人・個人事業主
+  CORPORATE   // 法人
+}
+
 model MonitoringSource {
   id               String       @id @default(cuid())
   platform         String
@@ -137,4 +144,29 @@ model AppSetting {
   updatedAt DateTime @updatedAt @map("updated_at")
 
   @@map("app_settings")
+}
+
+/// クライアント（発注者）単位の補助メタ。プロフィールキー（例: ``/client/foo`` や
+/// ``/public/employers/123``）で一意化し、同一クライアントの全求人に種別を一括反映する。
+model ClientProfile {
+  id            String           @id @default(cuid())
+  /// 集約キー。client-analysis の normalizeProfileKey と同じ正規化パス。
+  profileKey    String           @unique @map("profile_key")
+  platform      String           @default("")
+  displayName   String           @default("") @map("display_name")
+  /// 表示する事業主体。manualOverride=true のとき手動値が優先される。
+  entityType    ClientEntityType @default(UNKNOWN) @map("entity_type")
+  /// 名前・シグナルから自動推定した種別（参考値・上書きされない）。
+  autoEntityType ClientEntityType @default(UNKNOWN) @map("auto_entity_type")
+  /// 自動推定の確度（0–1）。名前ワード一致やプロフィールシグナルから算出。
+  autoConfidence Float           @default(0) @map("auto_confidence")
+  /// ユーザーが手動で確定したか（true なら ingest の自動推定で上書きしない）。
+  manualOverride Boolean         @default(false) @map("manual_override")
+  /// プロフィール由来の補助シグナル（is_official_account 等）。推定の根拠保存用。
+  signals        Json?
+  createdAt     DateTime         @default(now()) @map("created_at")
+  updatedAt     DateTime         @updatedAt @map("updated_at")
+
+  @@index([entityType])
+  @@map("client_profiles")
 }

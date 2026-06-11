@@ -52,9 +52,34 @@ export async function GET(req: Request) {
 
   const { summary, clients } = aggregateClientAnalysis(inputs);
 
+  // ClientProfile（事業主体 個人/法人）を突き合わせる。集約キーは ``pf:{profileKey}``。
+  const profiles = await db.clientProfile.findMany({
+    select: {
+      profileKey: true,
+      entityType: true,
+      autoEntityType: true,
+      autoConfidence: true,
+      manualOverride: true,
+    },
+  });
+  const profileByKey = new Map(profiles.map((p) => [p.profileKey, p]));
+
+  const clientsWithEntity = clients.map((c) => {
+    if (!c.key.startsWith("pf:")) return c;
+    const profileKey = c.key.slice(3);
+    const p = profileByKey.get(profileKey);
+    if (!p) return c;
+    return {
+      ...c,
+      entityType: p.entityType,
+      entitySource: (p.manualOverride ? "manual" : "auto") as "manual" | "auto",
+      entityConfidence: p.manualOverride ? 1 : p.autoConfidence,
+    };
+  });
+
   return ok({
     summary,
-    clients,
+    clients: clientsWithEntity,
     scan: { limit, orderedBy: "detectedAt_desc" as const },
   });
 }
