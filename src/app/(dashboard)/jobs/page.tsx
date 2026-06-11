@@ -19,6 +19,7 @@ import {
   PercentIcon,
   SparklesIcon,
   StarIcon,
+  TagsIcon,
   UsersIcon,
 } from "lucide-react";
 import * as React from "react";
@@ -50,6 +51,7 @@ import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Separator } from "@/components/ui/separator";
 import { Skeleton } from "@/components/ui/skeleton";
+import { Switch } from "@/components/ui/switch";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { motion } from "framer-motion";
@@ -66,6 +68,10 @@ import {
   type JobStatusValue,
 } from "@/lib/job-status";
 import { parseBudget } from "@/lib/budget";
+import { JOB_KEYWORDS_SETTING_KEY, keywordsFromSettingValue } from "@/lib/job-keywords";
+
+/** Jobs 一覧で個別 ON にしたキーワードの選択状態を保持する localStorage キー。 */
+const KEYWORD_SELECTION_STORAGE_KEY = "jobs:selectedKeywords";
 
 type ClientListingMeta = {
   ordersText: string | null;
@@ -104,6 +110,7 @@ type JobsListPayload = {
   limit: number;
   freshInWindow: number;
   totalPages: number;
+  keywordFilter: { active: boolean; keywords: string[]; saved: string[] };
 };
 
 type RowStats = JobLiveStats | { loading: true } | { error: string };
@@ -722,6 +729,9 @@ export default function JobsPage() {
   const [boardPf, setBoardPf] = React.useState<"" | "lw" | "cw">("");
   const [boardCat, setBoardCat] = React.useState<"" | "system" | "web">("");
   const [statusFilter, setStatusFilter] = React.useState<JobStatusValue[]>([]);
+  // 設定済みキーワードのうち、個別に ON にしたもの（OR 一致で絞り込む）。
+  // 初期状態は全 OFF。選択は localStorage に保存し、リロード後も維持する。
+  const [selectedKeywords, setSelectedKeywords] = React.useState<string[]>([]);
   const [sort, setSort] = React.useState<"" | "posted">("");
   const [page, setPage] = React.useState(1);
   const [pageSize, setPageSize] = React.useState(20);
@@ -734,12 +744,73 @@ export default function JobsPage() {
   // 応募見積もり金額の即時反映用オーバーレイ
   const [amountOverrides, setAmountOverrides] = React.useState<Record<string, number | null>>({});
 
+  // 設定ページで登録済みのキーワード一覧（個別トグルの選択肢）。
+  const savedKeywordsQuery = useQuery({
+    queryKey: ["job-keywords"],
+    queryFn: async () => {
+      const res = await fetch("/api/settings", { cache: "no-store" });
+      const json = await res.json();
+      if (!json.ok) throw new Error(json.error.message);
+      const rows = json.data.settings as { key: string; value: unknown }[];
+      const row = rows.find((r) => r.key === JOB_KEYWORDS_SETTING_KEY);
+      return keywordsFromSettingValue(row?.value);
+    },
+  });
+  const savedKeywords = React.useMemo(
+    () => savedKeywordsQuery.data ?? [],
+    [savedKeywordsQuery.data],
+  );
+
+  // localStorage から選択状態を復元（初回マウント時）。
+  React.useEffect(() => {
+    try {
+      const raw = window.localStorage.getItem(KEYWORD_SELECTION_STORAGE_KEY);
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        if (Array.isArray(parsed)) {
+          setSelectedKeywords(parsed.filter((x): x is string => typeof x === "string"));
+        }
+      }
+    } catch {
+      // 破損データは無視（全 OFF のまま）。
+    }
+  }, []);
+
+  // 設定が変わって存在しなくなったキーワードは選択から外す（保存値と同期）。
+  React.useEffect(() => {
+    if (!savedKeywordsQuery.isSuccess) return;
+    const savedLower = new Set(savedKeywords.map((k) => k.toLowerCase()));
+    setSelectedKeywords((prev) => {
+      const pruned = prev.filter((k) => savedLower.has(k.toLowerCase()));
+      return pruned.length === prev.length ? prev : pruned;
+    });
+  }, [savedKeywords, savedKeywordsQuery.isSuccess]);
+
+  // 選択状態を localStorage に永続化。
+  React.useEffect(() => {
+    try {
+      window.localStorage.setItem(
+        KEYWORD_SELECTION_STORAGE_KEY,
+        JSON.stringify(selectedKeywords),
+      );
+    } catch {
+      // 保存できなくても致命的ではない。
+    }
+  }, [selectedKeywords]);
+
+  const toggleKeyword = (kw: string, on: boolean) => {
+    setSelectedKeywords((prev) => {
+      const without = prev.filter((k) => k.toLowerCase() !== kw.toLowerCase());
+      return on ? [...without, kw] : without;
+    });
+  };
+
   React.useEffect(() => {
     setPage(1);
     setLiveStatsMap({});
     setStatusOverrides({});
     setAmountOverrides({});
-  }, [q, boardPf, boardCat, statusFilter, sort]);
+  }, [q, boardPf, boardCat, statusFilter, selectedKeywords, sort]);
 
   const handleBulkLiveStats = async () => {
     if (bulkFetching || listJobs.length === 0) return;
@@ -774,11 +845,12 @@ export default function JobsPage() {
     if (boardPf) u.set("boardPf", boardPf);
     if (boardCat) u.set("boardCat", boardCat);
     if (statusFilter.length > 0) u.set("status", statusFilter.join(","));
+    if (selectedKeywords.length > 0) u.set("keywords", selectedKeywords.join(","));
     if (sort) u.set("sort", sort);
     u.set("page", String(page));
     u.set("limit", String(pageSize));
     return u.toString();
-  }, [q, boardPf, boardCat, statusFilter, sort, page, pageSize]);
+  }, [q, boardPf, boardCat, statusFilter, selectedKeywords, sort, page, pageSize]);
 
   const { data, isLoading } = useQuery({
     queryKey: ["jobs", qs],
@@ -926,6 +998,23 @@ export default function JobsPage() {
             ) : null}
           </div>
           <p className="text-sm text-zinc-500">Search, prioritize, and paginate detected postings.</p>
+          {selectedKeywords.length > 0 ? (
+            <div className="flex flex-wrap items-center gap-1.5">
+              <span className="inline-flex items-center gap-1 text-xs text-emerald-700 dark:text-emerald-400">
+                <TagsIcon className="size-3.5 shrink-0" aria-hidden />
+                キーワード一致のみ (OR):
+              </span>
+              {selectedKeywords.map((kw) => (
+                <Badge
+                  key={kw}
+                  variant="outline"
+                  className="border-emerald-500/40 bg-emerald-500/10 text-[10px] text-emerald-900 dark:text-emerald-200"
+                >
+                  {kw}
+                </Badge>
+              ))}
+            </div>
+          ) : null}
         </div>
         <div className="flex flex-wrap gap-2">
           <Button
@@ -1058,6 +1147,87 @@ export default function JobsPage() {
                     );
                   })}
                 </div>
+              </PopoverContent>
+            </Popover>
+            <Popover>
+              <PopoverTrigger asChild>
+                <Button
+                  variant="outline"
+                  className="h-9 w-auto min-w-[8rem] shrink-0 justify-start gap-2 font-normal"
+                  aria-label="キーワードで絞り込み（個別 ON/OFF）"
+                >
+                  <TagsIcon className="size-4 shrink-0 text-emerald-600 dark:text-emerald-400" aria-hidden />
+                  <span className="truncate">
+                    {selectedKeywords.length === 0
+                      ? "キーワード"
+                      : `キーワード (${selectedKeywords.length})`}
+                  </span>
+                </Button>
+              </PopoverTrigger>
+              <PopoverContent align="end" className="w-64 p-2">
+                <div className="flex items-center justify-between px-1 pb-1.5">
+                  <span className="text-xs font-medium text-zinc-500">
+                    キーワード（OR 一致）
+                  </span>
+                  {selectedKeywords.length > 0 ? (
+                    <button
+                      type="button"
+                      onClick={() => setSelectedKeywords([])}
+                      className="text-xs text-violet-600 hover:underline dark:text-violet-400"
+                    >
+                      クリア
+                    </button>
+                  ) : null}
+                </div>
+                <Separator className="mb-1" />
+                {savedKeywords.length === 0 ? (
+                  <p className="px-1.5 py-2 text-xs text-zinc-500">
+                    キーワードが未設定です。Settings で登録すると、ここで個別に ON/OFF できます。
+                  </p>
+                ) : (
+                  <>
+                    <div className="flex items-center justify-between px-1.5 pb-1">
+                      <button
+                        type="button"
+                        onClick={() => setSelectedKeywords(savedKeywords)}
+                        className="text-xs text-zinc-600 hover:underline dark:text-zinc-300"
+                        disabled={selectedKeywords.length === savedKeywords.length}
+                      >
+                        すべて ON
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setSelectedKeywords([])}
+                        className="text-xs text-zinc-600 hover:underline dark:text-zinc-300"
+                        disabled={selectedKeywords.length === 0}
+                      >
+                        すべて OFF
+                      </button>
+                    </div>
+                    <div className="max-h-64 space-y-0.5 overflow-y-auto">
+                      {savedKeywords.map((kw) => {
+                        const on = selectedKeywords.some(
+                          (k) => k.toLowerCase() === kw.toLowerCase(),
+                        );
+                        return (
+                          <label
+                            key={kw}
+                            className="flex cursor-pointer items-center justify-between gap-2 rounded-md px-1.5 py-1.5 text-sm hover:bg-muted"
+                          >
+                            <span className="min-w-0 flex-1 truncate" title={kw}>
+                              {kw}
+                            </span>
+                            <Switch
+                              checked={on}
+                              onCheckedChange={(v) => toggleKeyword(kw, !!v)}
+                              aria-label={`キーワード「${kw}」で絞り込む`}
+                            />
+                          </label>
+                        );
+                      })}
+                    </div>
+                  </>
+                )}
               </PopoverContent>
             </Popover>
             <Select value={sort || "__default"} onValueChange={(v) => setSort(v === "__default" ? "" : (v as typeof sort))}>

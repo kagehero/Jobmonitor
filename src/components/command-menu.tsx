@@ -6,6 +6,7 @@ import {
   LayersIcon,
   LineChartIcon,
   SearchIcon,
+  SettingsIcon,
   UsersRoundIcon,
 } from "lucide-react";
 import { useRouter } from "next/navigation";
@@ -20,6 +21,7 @@ const links = [
   { label: "Sources", href: "/sources", icon: LayersIcon },
   { label: "Jobs", href: "/jobs", icon: SearchIcon },
   { label: "Client analysis", href: "/clients", icon: UsersRoundIcon },
+  { label: "Settings", href: "/settings", icon: SettingsIcon },
 ];
 
 export function CommandMenu() {

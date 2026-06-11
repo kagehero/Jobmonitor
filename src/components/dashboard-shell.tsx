@@ -5,6 +5,7 @@ import {
   LineChartIcon,
   SearchIcon,
   CommandIcon,
+  SettingsIcon,
   UsersRoundIcon,
 } from "lucide-react";
 import Link from "next/link";
@@ -26,6 +27,7 @@ const nav = [
   { href: "/sources", label: "Sources", icon: LayersIcon },
   { href: "/jobs", label: "Jobs", icon: SearchIcon },
   { href: "/clients", label: "Client analysis", icon: UsersRoundIcon },
+  { href: "/settings", label: "Settings", icon: SettingsIcon },
 ];
 
 export function DashboardShell({ children }: { children: React.ReactNode }) {

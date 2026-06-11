@@ -3,6 +3,10 @@ import type { Prisma, JobStatus } from "@prisma/client";
 import { db } from "@/lib/db";
 import { ok } from "@/lib/api-response";
 import { JOB_STATUS_VALUES } from "@/lib/job-status";
+import {
+  JOB_KEYWORDS_SETTING_KEY,
+  keywordsFromSettingValue,
+} from "@/lib/job-keywords";
 
 export const dynamic = "force-dynamic";
 
@@ -76,6 +80,21 @@ function boardCategoryPredicate(cat: BoardCat, pf?: BoardPf): Prisma.DetectedJob
   return { OR: [lancersPred, crowdPred] };
 }
 
+/**
+ * ダッシュボードで設定した「ジョブ絞り込みキーワード」を OR 一致で適用する述語。
+ * いずれかのキーワードがタイトル／説明文に含まれる案件だけを残す。
+ * キーワード未設定（空配列）の場合は ``null`` を返し、絞り込みを行わない。
+ */
+function keywordPredicate(keywords: string[]): Prisma.DetectedJobWhereInput | null {
+  if (keywords.length === 0) return null;
+  return {
+    OR: keywords.flatMap((kw) => [
+      { title: { contains: kw, mode: "insensitive" as const } },
+      { description: { contains: kw, mode: "insensitive" as const } },
+    ]),
+  };
+}
+
 export async function GET(req: Request) {
   const { searchParams } = new URL(req.url);
   const q = searchParams.get("q")?.trim();
@@ -83,6 +102,19 @@ export async function GET(req: Request) {
   const tag = searchParams.get("tag")?.trim();
   const boardPf = normalizeBoardPf(searchParams.get("boardPf"));
   const boardCat = normalizeBoardCat(searchParams.get("boardCat"));
+  // キーワード絞り込み（OR 一致）。`keywords` パラメータの解釈は次のとおり:
+  //  - 未指定・空        → 絞り込みなし
+  //  - 1 / true / on    → 設定済み（job_keywords）の全キーワードを使用（後方互換）
+  //  - "Python,PHP"     → そのうち設定済みキーワードに一致するものだけを使用（個別選択）
+  const keywordsParamRaw = (searchParams.get("keywords") ?? "").trim();
+  const keywordsUseAll = ["1", "true", "on"].includes(keywordsParamRaw.toLowerCase());
+  const keywordsRequested = keywordsUseAll
+    ? []
+    : keywordsParamRaw
+        ? keywordsParamRaw.split(",").map((s) => s.trim()).filter(Boolean)
+        : [];
+  // 絞り込みを行うか（全件指定 or 個別指定が 1 つ以上）。
+  const keywordsFilterOn = keywordsUseAll || keywordsRequested.length > 0;
 
   // status=APPLIED,INTERVIEW のようにカンマ区切りで複数指定（複数選択フィルタ）
   const statusSet = new Set<string>(JOB_STATUS_VALUES);
@@ -128,6 +160,27 @@ export async function GET(req: Request) {
 
   if (statuses.length > 0) {
     andBlocks.push({ status: { in: statuses } });
+  }
+
+  // 設定済みキーワードフィルタ。`keywords` パラメータで全件 or 個別選択を適用する。
+  // 個別指定の場合は、設定済みキーワードに一致するものだけを採用（未知の語は無視）。
+  let savedKeywords: string[] = [];
+  let appliedKeywords: string[] = [];
+  if (keywordsFilterOn) {
+    const row = await db.appSetting.findUnique({
+      where: { key: JOB_KEYWORDS_SETTING_KEY },
+    });
+    savedKeywords = keywordsFromSettingValue(row?.value);
+
+    if (keywordsUseAll) {
+      appliedKeywords = savedKeywords;
+    } else {
+      const requestedLower = new Set(keywordsRequested.map((k) => k.toLowerCase()));
+      appliedKeywords = savedKeywords.filter((k) => requestedLower.has(k.toLowerCase()));
+    }
+
+    const pred = keywordPredicate(appliedKeywords);
+    if (pred) andBlocks.push(pred);
   }
 
   const where: Prisma.DetectedJobWhereInput =
@@ -176,5 +229,10 @@ export async function GET(req: Request) {
     limit,
     freshInWindow,
     totalPages: Math.max(1, Math.ceil(total / limit) || 1),
+    // キーワードフィルタの状態。
+    //  - active   : 絞り込みを適用したか
+    //  - keywords : 実際に適用したキーワード（OR 一致）
+    //  - saved    : 設定済みキーワード（個別トグルの選択肢）
+    keywordFilter: { active: keywordsFilterOn, keywords: appliedKeywords, saved: savedKeywords },
   });
 }

@@ -19,13 +19,16 @@ async function seedAppSettings() {
       },
     },
     { key: "scraper_timeout_ms", value: { value: 25000 } },
+    // ジョブ絞り込みキーワード（Settings で編集 / Jobs 一覧でトグル）。既定は空。
+    { key: "job_keywords", value: { value: [] as string[] } },
   ] as const;
 
   for (const row of rows) {
     await prisma.appSetting.upsert({
       where: { key: row.key },
+      // 既存 job_keywords を上書きしないよう、作成時のみ既定値を入れる。
       create: { key: row.key, value: row.value },
-      update: { value: row.value },
+      update: row.key === "job_keywords" ? {} : { value: row.value },
     });
   }
 }
