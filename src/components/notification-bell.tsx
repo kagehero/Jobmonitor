@@ -5,6 +5,7 @@ import { BellRingIcon, ExternalLinkIcon } from "lucide-react";
 import Link from "next/link";
 import * as React from "react";
 import { formatDistanceToNow } from "date-fns";
+import { ja } from "date-fns/locale";
 import { toast } from "sonner";
 
 import { Badge } from "@/components/ui/badge";
@@ -188,7 +189,7 @@ export function NotificationBell({ className }: { className?: string }) {
                           {job.platform}
                         </Badge>
                         <span className="text-[11px] text-zinc-500">
-                          {formatDistanceToNow(new Date(job.detectedAt), { addSuffix: true })}
+                          {formatDistanceToNow(new Date(job.detectedAt), { addSuffix: true, locale: ja })}
                         </span>
                       </div>
                     </div>

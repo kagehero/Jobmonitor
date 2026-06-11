@@ -1,7 +1,8 @@
-import type { Prisma } from "@prisma/client";
+import type { Prisma, JobStatus } from "@prisma/client";
 
 import { db } from "@/lib/db";
 import { ok } from "@/lib/api-response";
+import { JOB_STATUS_VALUES } from "@/lib/job-status";
 
 export const dynamic = "force-dynamic";
 
@@ -83,6 +84,13 @@ export async function GET(req: Request) {
   const boardPf = normalizeBoardPf(searchParams.get("boardPf"));
   const boardCat = normalizeBoardCat(searchParams.get("boardCat"));
 
+  // status=APPLIED,INTERVIEW のようにカンマ区切りで複数指定（複数選択フィルタ）
+  const statusSet = new Set<string>(JOB_STATUS_VALUES);
+  const statuses = (searchParams.get("status") ?? "")
+    .split(",")
+    .map((s) => s.trim().toUpperCase())
+    .filter((s) => statusSet.has(s)) as JobStatus[];
+
   const pageRaw = parseInt(searchParams.get("page") ?? "1", 10);
   const limitRaw = parseInt(searchParams.get("limit") ?? "20", 10);
   const page = Number.isFinite(pageRaw) && pageRaw >= 1 ? pageRaw : 1;
@@ -118,16 +126,16 @@ export async function GET(req: Request) {
     andBlocks.push(boardCategoryPredicate(boardCat, boardPf));
   }
 
+  if (statuses.length > 0) {
+    andBlocks.push({ status: { in: statuses } });
+  }
+
   const where: Prisma.DetectedJobWhereInput =
     andBlocks.length === 0 ? {} : andBlocks.length === 1 ? andBlocks[0]! : { AND: andBlocks };
 
   const sort = searchParams.get("sort")?.trim();
   const orderBy: Prisma.DetectedJobOrderByWithRelationInput =
-    sort === "score"
-      ? { aiScore: "desc" }
-      : sort === "posted"
-        ? { postedAt: "desc" }
-        : { detectedAt: "desc" };
+    sort === "posted" ? { postedAt: "desc" } : { detectedAt: "desc" };
 
   const freshSince = new Date(Date.now() - FRESH_WINDOW_MS);
   const whereFresh: Prisma.DetectedJobWhereInput = {
@@ -145,7 +153,6 @@ export async function GET(req: Request) {
       include: {
         source: { select: { platform: true, url: true } },
         discordNotifications: { take: 1, orderBy: { sentAt: "desc" } },
-        aiAnalysis: true,
       },
       orderBy,
       skip,
@@ -157,7 +164,6 @@ export async function GET(req: Request) {
     ...job,
     platform: job.source.platform,
     sourceUrl: job.source.url,
-    aiScoreNormalized: job.aiAnalysis?.relevanceScore ?? job.aiScore,
     notificationStatus:
       job.discordNotifications[0]?.status ??
       (job.notificationSent ? ("SENT" as const) : ("PENDING" as const)),

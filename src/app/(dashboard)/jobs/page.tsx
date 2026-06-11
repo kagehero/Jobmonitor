@@ -12,6 +12,7 @@ import {
   ExternalLinkIcon,
   FilterIcon,
   InfoIcon,
+  ListFilterIcon,
   LoaderCircleIcon,
   MoreHorizontalIcon,
   PackageIcon,
@@ -23,6 +24,7 @@ import {
 import * as React from "react";
 import { toast } from "sonner";
 import { formatDistanceToNow } from "date-fns";
+import { ja } from "date-fns/locale";
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -44,6 +46,7 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Separator } from "@/components/ui/separator";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -55,6 +58,14 @@ import { ClientExtrasInline, LancersClientFeedbackStrip, parseLancersFeedbackCou
 import { sanitizeClientExtrasText } from "@/lib/client-extras-text";
 import { PostingSourceBadges } from "@/components/posting-source-badges";
 import type { JobLiveStats } from "@/app/api/detected-jobs/[id]/live-stats/route";
+import {
+  JOB_STATUS_LIST,
+  jobStatusMeta,
+  statusAllowsAmount,
+  formatYen,
+  type JobStatusValue,
+} from "@/lib/job-status";
+import { parseBudget } from "@/lib/budget";
 
 type ClientListingMeta = {
   ordersText: string | null;
@@ -76,20 +87,13 @@ type JobRow = {
   projectUrl: string;
   postedAt: string | null;
   detectedAt: string;
-  aiScore: number | null;
+  status: JobStatusValue;
+  appliedAmount: number | null;
   tags: string[];
   notificationSent: boolean;
   platform: string;
   sourceUrl: string;
-  aiScoreNormalized: number | null;
   notificationStatus: string;
-  aiAnalysis: {
-    relevanceScore: number;
-    profitabilityScore: number;
-    spamScore: number;
-    urgencyScore: number;
-    analysisJson: Record<string, unknown>;
-  } | null;
   rawData: unknown;
 };
 
@@ -582,13 +586,6 @@ function ClientCell({ job }: { job: JobRow }) {
 
 const NEW_MS = 2 * 3600 * 1000;
 
-/** True when scores are monitor ingest placeholders — not LLM-ranked. */
-function isListingParseOnly(ai: JobRow["aiAnalysis"]): boolean {
-  if (!ai) return false;
-  const note = ai.analysisJson?.note;
-  return typeof note === "string" && note.toLowerCase().includes("placeholder");
-}
-
 function DetectedJobsPaginationBar(props: {
   rangeStart: number;
   rangeEnd: number;
@@ -724,18 +721,25 @@ export default function JobsPage() {
   const [q, setQ] = React.useState("");
   const [boardPf, setBoardPf] = React.useState<"" | "lw" | "cw">("");
   const [boardCat, setBoardCat] = React.useState<"" | "system" | "web">("");
-  const [sort, setSort] = React.useState<"" | "score" | "posted">("");
+  const [statusFilter, setStatusFilter] = React.useState<JobStatusValue[]>([]);
+  const [sort, setSort] = React.useState<"" | "posted">("");
   const [page, setPage] = React.useState(1);
   const [pageSize, setPageSize] = React.useState(20);
   const [selected, setSelected] = React.useState<Record<string, boolean>>({});
   const [detail, setDetail] = React.useState<JobRow | null>(null);
   const [liveStatsMap, setLiveStatsMap] = React.useState<Record<string, RowStats>>({});
   const [bulkFetching, setBulkFetching] = React.useState(false);
+  // ステータス変更を即時反映するためのローカルオーバーレイ（再フェッチで上書きされる）
+  const [statusOverrides, setStatusOverrides] = React.useState<Record<string, JobStatusValue>>({});
+  // 応募見積もり金額の即時反映用オーバーレイ
+  const [amountOverrides, setAmountOverrides] = React.useState<Record<string, number | null>>({});
 
   React.useEffect(() => {
     setPage(1);
     setLiveStatsMap({});
-  }, [q, boardPf, boardCat, sort]);
+    setStatusOverrides({});
+    setAmountOverrides({});
+  }, [q, boardPf, boardCat, statusFilter, sort]);
 
   const handleBulkLiveStats = async () => {
     if (bulkFetching || listJobs.length === 0) return;
@@ -769,11 +773,12 @@ export default function JobsPage() {
     if (q.trim()) u.set("q", q.trim());
     if (boardPf) u.set("boardPf", boardPf);
     if (boardCat) u.set("boardCat", boardCat);
+    if (statusFilter.length > 0) u.set("status", statusFilter.join(","));
     if (sort) u.set("sort", sort);
     u.set("page", String(page));
     u.set("limit", String(pageSize));
     return u.toString();
-  }, [q, boardPf, boardCat, sort, page, pageSize]);
+  }, [q, boardPf, boardCat, statusFilter, sort, page, pageSize]);
 
   const { data, isLoading } = useQuery({
     queryKey: ["jobs", qs],
@@ -820,6 +825,67 @@ export default function JobsPage() {
     },
     onError: (e: Error) => toast.error(e.message),
   });
+
+  // ジョブ単体のステータス更新（楽観的更新）
+  const statusMut = useMutation({
+    mutationFn: async (payload: { id: string; status: JobStatusValue }) => {
+      const res = await fetch(`/api/detected-jobs/${payload.id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ status: payload.status }),
+      });
+      const json = await res.json();
+      if (!json.ok) throw new Error(json.error.message);
+      return payload;
+    },
+    onMutate: ({ id, status }) => {
+      setStatusOverrides((prev) => ({ ...prev, [id]: status }));
+    },
+    onError: (e: Error, { id }) => {
+      toast.error(e.message);
+      // 失敗時はオーバーレイを取り消してサーバ値に戻す
+      setStatusOverrides((prev) => {
+        const next = { ...prev };
+        delete next[id];
+        return next;
+      });
+    },
+  });
+
+  const handleStatusChange = (id: string, status: JobStatusValue) => {
+    statusMut.mutate({ id, status });
+    setDetail((d) => (d && d.id === id ? { ...d, status } : d));
+  };
+
+  // 応募見積もり金額の更新（楽観的更新）
+  const amountMut = useMutation({
+    mutationFn: async (payload: { id: string; appliedAmount: number | null }) => {
+      const res = await fetch(`/api/detected-jobs/${payload.id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ appliedAmount: payload.appliedAmount }),
+      });
+      const json = await res.json();
+      if (!json.ok) throw new Error(json.error.message);
+      return payload;
+    },
+    onMutate: ({ id, appliedAmount }) => {
+      setAmountOverrides((prev) => ({ ...prev, [id]: appliedAmount }));
+    },
+    onError: (e: Error, { id }) => {
+      toast.error(e.message);
+      setAmountOverrides((prev) => {
+        const next = { ...prev };
+        delete next[id];
+        return next;
+      });
+    },
+  });
+
+  const handleAmountChange = (id: string, appliedAmount: number | null) => {
+    amountMut.mutate({ id, appliedAmount });
+    setDetail((d) => (d && d.id === id ? { ...d, appliedAmount } : d));
+  };
 
   const idsSelected = React.useMemo(() => Object.entries(selected).filter(([, v]) => v).map(([k]) => k), [selected]);
 
@@ -937,6 +1003,63 @@ export default function JobsPage() {
                 <SelectItem value="web">Web</SelectItem>
               </SelectContent>
             </Select>
+            <Popover>
+              <PopoverTrigger asChild>
+                <Button
+                  variant="outline"
+                  className="h-9 w-auto min-w-[8rem] shrink-0 justify-start gap-2 font-normal"
+                  aria-label="ステータスで絞り込み"
+                >
+                  <ListFilterIcon className="size-4 shrink-0 opacity-70" aria-hidden />
+                  <span className="truncate">
+                    {statusFilter.length === 0
+                      ? "ステータス"
+                      : `ステータス (${statusFilter.length})`}
+                  </span>
+                </Button>
+              </PopoverTrigger>
+              <PopoverContent align="end" className="w-52 p-2">
+                <div className="flex items-center justify-between px-1 pb-1.5">
+                  <span className="text-xs font-medium text-zinc-500">ステータス</span>
+                  {statusFilter.length > 0 ? (
+                    <button
+                      type="button"
+                      onClick={() => setStatusFilter([])}
+                      className="text-xs text-violet-600 hover:underline dark:text-violet-400"
+                    >
+                      クリア
+                    </button>
+                  ) : null}
+                </div>
+                <Separator className="mb-1" />
+                <div className="space-y-0.5">
+                  {JOB_STATUS_LIST.map((s) => {
+                    const checked = statusFilter.includes(s.value);
+                    return (
+                      <label
+                        key={s.value}
+                        className="flex cursor-pointer items-center gap-2 rounded-md px-1.5 py-1.5 text-sm hover:bg-muted"
+                      >
+                        <Checkbox
+                          checked={checked}
+                          onCheckedChange={(v) =>
+                            setStatusFilter((prev) =>
+                              v ? [...prev, s.value] : prev.filter((x) => x !== s.value),
+                            )
+                          }
+                          aria-label={s.label}
+                        />
+                        <span
+                          className={`inline-flex items-center rounded-full border px-2 py-0.5 text-xs ${s.badgeClass}`}
+                        >
+                          {s.label}
+                        </span>
+                      </label>
+                    );
+                  })}
+                </div>
+              </PopoverContent>
+            </Popover>
             <Select value={sort || "__default"} onValueChange={(v) => setSort(v === "__default" ? "" : (v as typeof sort))}>
               <SelectTrigger className="flex h-9 w-auto min-w-[10.5rem] max-w-none shrink-0 gap-2 overflow-hidden sm:min-w-[11.5rem]">
                 <ArrowUpDownIcon className="size-4 shrink-0 opacity-70" aria-hidden />
@@ -1000,6 +1123,8 @@ export default function JobsPage() {
                       </span>
                     </TableHead>
                     <TableHead className="min-w-[6rem]">残り日数</TableHead>
+                    <TableHead className="min-w-[7.5rem]">ステータス</TableHead>
+                    <TableHead className="min-w-[6.5rem]">応募見積もり</TableHead>
                     <TableHead className="w-[80px] text-right">Actions</TableHead>
                   </TableRow>
                 </TableHeader>
@@ -1037,7 +1162,7 @@ export default function JobsPage() {
                               ) : null}
                             </div>
                             <p className="truncate text-[11px] text-zinc-500">
-                              Detected {formatDistanceToNow(new Date(job.detectedAt), { addSuffix: true })}
+                              Detected {formatDistanceToNow(new Date(job.detectedAt), { addSuffix: true, locale: ja })}
                             </p>
                           </button>
                           <div className="mt-2 flex flex-wrap gap-1">
@@ -1052,8 +1177,8 @@ export default function JobsPage() {
                           <PostingSourceBadges dense platform={job.platform} listingUrl={job.sourceUrl} />
                         </TableCell>
                         <ClientCell job={job} />
-                        <TableCell className="max-w-[140px] truncate text-sm" title={job.budget}>
-                          {job.budget || "—"}
+                        <TableCell className="max-w-[160px] align-middle">
+                          <BudgetCell budget={job.budget} />
                         </TableCell>
                         <TableCell className="hidden sm:table-cell">
                           <LiveStatsCell
@@ -1067,6 +1192,23 @@ export default function JobsPage() {
                         </TableCell>
                         <TableCell className="align-middle">
                           <LiveStatsCell stats={liveStatsMap[job.id]} field="deadline" />
+                        </TableCell>
+                        <TableCell className="align-middle">
+                          <StatusCell
+                            value={statusOverrides[job.id] ?? job.status}
+                            onChange={(s) => handleStatusChange(job.id, s)}
+                          />
+                        </TableCell>
+                        <TableCell className="align-middle">
+                          <AppliedAmountCell
+                            status={statusOverrides[job.id] ?? job.status}
+                            amount={
+                              job.id in amountOverrides
+                                ? amountOverrides[job.id]!
+                                : job.appliedAmount
+                            }
+                            onChange={(v) => handleAmountChange(job.id, v)}
+                          />
                         </TableCell>
                         <TableCell className="text-right">
                           <div className="flex items-center justify-end gap-0.5">
@@ -1121,7 +1263,7 @@ export default function JobsPage() {
                   })}
                   {total === 0 ? (
                     <TableRow>
-                      <TableCell colSpan={9}>
+                      <TableCell colSpan={11}>
                         <div className="flex flex-col items-center gap-2 py-14 text-center">
                           <p className="font-medium text-zinc-900 dark:text-zinc-100">No jobs in this view</p>
                           <p className="max-w-md text-sm text-zinc-500">
@@ -1257,22 +1399,25 @@ export default function JobsPage() {
                 />
                 <DetailRow label="Detected" value={new Date(detail.detectedAt).toLocaleString()} />
                 <DetailRow
-                  label="AI relevance"
+                  label="ステータス"
                   value={
-                    detail.aiAnalysis && isListingParseOnly(detail.aiAnalysis)
-                      ? "— (not LLM-ranked; placeholder from listing parse)"
-                      : String(detail.aiAnalysis?.relevanceScore ?? detail.aiScore ?? "—")
+                    <Badge
+                      variant="outline"
+                      className={`text-xs font-normal ${jobStatusMeta(detail.status).badgeClass}`}
+                    >
+                      {jobStatusMeta(detail.status).label}
+                    </Badge>
                   }
                 />
+                {statusAllowsAmount(detail.status) ? (
+                  <DetailRow
+                    label="応募見積もり"
+                    value={formatYen(detail.appliedAmount) ?? "未入力"}
+                  />
+                ) : null}
                 <div>
                   <Label className="text-xs uppercase text-zinc-500">Description</Label>
                   <p className="mt-2 whitespace-pre-wrap">{detail.description || "(empty)"}</p>
-                </div>
-                <div>
-                  <Label className="text-xs uppercase text-zinc-500">AI JSON</Label>
-                  <pre className="mt-2 overflow-x-auto whitespace-pre-wrap break-words rounded-xl bg-zinc-950 p-3 text-[11px] leading-relaxed text-zinc-100">
-                    {JSON.stringify(detail.aiAnalysis?.analysisJson ?? {}, null, 2)}
-                  </pre>
                 </div>
               </div>
             ) : null}
@@ -1305,6 +1450,106 @@ function DetailRow(props: { label: string; value: React.ReactNode }) {
 }
 
 /**
+ * 応募見積もり金額のインライン編集セル。
+ * 応募済以降のステータスのときのみ編集可能。クリックで入力欄に切り替わり、
+ * Enter / blur で保存、Escape で取り消し。空保存で金額をクリア。
+ */
+function AppliedAmountCell({
+  status,
+  amount,
+  onChange,
+}: {
+  status: JobStatusValue;
+  amount: number | null;
+  onChange: (next: number | null) => void;
+}) {
+  const editable = statusAllowsAmount(status);
+  const [editing, setEditing] = React.useState(false);
+  const [draft, setDraft] = React.useState("");
+
+  if (!editable) {
+    return <span className="text-zinc-400" title="応募済以降で入力できます">—</span>;
+  }
+
+  const commit = () => {
+    const digits = draft.replace(/[^\d]/g, "");
+    const next = digits === "" ? null : parseInt(digits, 10);
+    setEditing(false);
+    // 値が変わったときだけ保存
+    if (next !== amount) onChange(Number.isNaN(next as number) ? null : next);
+  };
+
+  if (editing) {
+    return (
+      <input
+        autoFocus
+        inputMode="numeric"
+        defaultValue={amount != null ? String(amount) : ""}
+        onChange={(e) => setDraft(e.target.value)}
+        onBlur={commit}
+        onKeyDown={(e) => {
+          if (e.key === "Enter") (e.target as HTMLInputElement).blur();
+          if (e.key === "Escape") {
+            setDraft(amount != null ? String(amount) : "");
+            setEditing(false);
+          }
+        }}
+        placeholder="円"
+        className="h-7 w-[6rem] rounded-md border border-zinc-300 bg-transparent px-2 text-sm tabular-nums outline-none focus:border-violet-500 dark:border-zinc-700"
+      />
+    );
+  }
+
+  const label = formatYen(amount);
+  return (
+    <button
+      type="button"
+      onClick={() => {
+        setDraft(amount != null ? String(amount) : "");
+        setEditing(true);
+      }}
+      className={`rounded-md px-1.5 py-0.5 text-sm tabular-nums transition-colors hover:bg-muted ${
+        label ? "text-zinc-900 dark:text-zinc-100" : "text-zinc-400"
+      }`}
+      title="クリックして編集"
+    >
+      {label ?? "未入力"}
+    </button>
+  );
+}
+
+/** 行ごとの応募管理ステータス。色付きバッジ風トリガーのドロップダウンで編集する。 */
+function StatusCell({
+  value,
+  onChange,
+}: {
+  value: JobStatusValue;
+  onChange: (next: JobStatusValue) => void;
+}) {
+  const meta = jobStatusMeta(value);
+  return (
+    <Select value={value} onValueChange={(v) => onChange(v as JobStatusValue)}>
+      <SelectTrigger
+        className={`h-7 w-auto min-w-[6.5rem] gap-1.5 rounded-full border px-2.5 text-xs font-medium ${meta.badgeClass}`}
+        aria-label="ステータスを変更"
+      >
+        <SelectValue />
+      </SelectTrigger>
+      <SelectContent>
+        {JOB_STATUS_LIST.map((s) => (
+          <SelectItem key={s.value} value={s.value}>
+            <span className="flex items-center gap-2">
+              <span className={`size-2 rounded-full ${s.badgeClass}`} aria-hidden />
+              {s.label}
+            </span>
+          </SelectItem>
+        ))}
+      </SelectContent>
+    </Select>
+  );
+}
+
+/**
  * 投稿時間を相対表記で表示。ホバーで正確な日時（ja-JP）。値が無ければダッシュ。
  * `approximate` の場合は検出日時を代用した概算値であることを示す（末尾に ~ ・注記）。
  */
@@ -1316,7 +1561,7 @@ function PostedTime({ iso, approximate }: { iso: string | null; approximate?: bo
     <Tooltip>
       <TooltipTrigger asChild>
         <span className="cursor-help text-sm tabular-nums text-zinc-700 dark:text-zinc-300">
-          {formatDistanceToNow(d, { addSuffix: true })}
+          {formatDistanceToNow(d, { addSuffix: true, locale: ja })}
           {approximate ? <span className="text-zinc-400"> ~</span> : null}
         </span>
       </TooltipTrigger>
@@ -1325,6 +1570,33 @@ function PostedTime({ iso, approximate }: { iso: string | null; approximate?: bo
         {approximate ? "（検出時刻・概算）" : ""}
       </TooltipContent>
     </Tooltip>
+  );
+}
+
+function BudgetCell({ budget }: { budget: string }) {
+  const parsed = parseBudget(budget);
+
+  if (!parsed.isRange || parsed.upper == null) {
+    if (parsed.lower === "—") return <span className="text-zinc-400">—</span>;
+    return (
+      <span className="text-sm tabular-nums text-zinc-700 dark:text-zinc-300">
+        {parsed.lower}
+      </span>
+    );
+  }
+
+  return (
+    <div className="flex flex-col leading-tight">
+      {parsed.kind ? (
+        <span className="text-[11px] text-zinc-400">{parsed.kind}</span>
+      ) : null}
+      <span className="text-sm tabular-nums text-zinc-700 dark:text-zinc-300">
+        {parsed.lower}
+      </span>
+      <span className="text-sm tabular-nums text-zinc-700 dark:text-zinc-300">
+        {parsed.upper}
+      </span>
+    </div>
   );
 }
 

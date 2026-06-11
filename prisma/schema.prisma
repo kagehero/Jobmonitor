@@ -19,6 +19,16 @@ enum DiscordDeliveryStatus {
   FAILED
 }
 
+/// 応募管理用のステータス（ユーザーが手動で設定・編集）。
+enum JobStatus {
+  NONE       // 未対応
+  CONSIDERING // 検討中
+  APPLIED    // 応募済
+  INTERVIEW  // 面談
+  WON        // 受注
+  REJECTED   // 見送り
+}
+
 model MonitoringSource {
   id               String       @id @default(cuid())
   platform         String
@@ -58,6 +68,9 @@ model DetectedJob {
   detectedAt         DateTime         @default(now()) @map("detected_at")
   aiScore            Float?           @map("ai_score")
   tags               String[]
+  status             JobStatus        @default(NONE)
+  /// 応募時に提示した見積もり金額（円）。応募済以降のみ使用。
+  appliedAmount      Int?             @map("applied_amount")
   notificationSent   Boolean          @default(false) @map("notification_sent")
   rawData            Json?            @map("raw_data")
 

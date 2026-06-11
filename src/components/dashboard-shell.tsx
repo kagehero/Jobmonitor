@@ -4,7 +4,6 @@ import {
   LayersIcon,
   LineChartIcon,
   SearchIcon,
-  BotIcon,
   CommandIcon,
   UsersRoundIcon,
 } from "lucide-react";
@@ -27,7 +26,6 @@ const nav = [
   { href: "/sources", label: "Sources", icon: LayersIcon },
   { href: "/jobs", label: "Jobs", icon: SearchIcon },
   { href: "/clients", label: "Client analysis", icon: UsersRoundIcon },
-  { href: "/ai", label: "AI Analysis", icon: BotIcon },
 ];
 
 export function DashboardShell({ children }: { children: React.ReactNode }) {
