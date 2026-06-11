@@ -7,6 +7,7 @@ import {
   JOB_KEYWORDS_SETTING_KEY,
   keywordsFromSettingValue,
 } from "@/lib/job-keywords";
+import { parseBudgetAmounts, budgetMatchesRange } from "@/lib/budget";
 
 export const dynamic = "force-dynamic";
 
@@ -116,6 +117,21 @@ export async function GET(req: Request) {
   // 絞り込みを行うか（全件指定 or 個別指定が 1 つ以上）。
   const keywordsFilterOn = keywordsUseAll || keywordsRequested.length > 0;
 
+  // 見積（予算）レンジフィルタ（円）。budget 文字列から金額を抽出してアプリ側で判定する。
+  const parseYenParam = (raw: string | null): number | null => {
+    if (!raw) return null;
+    const n = parseInt(raw.replace(/[^\d]/g, ""), 10);
+    return Number.isFinite(n) && n >= 0 ? n : null;
+  };
+  const budgetMin = parseYenParam(searchParams.get("budgetMin"));
+  const budgetMax = parseYenParam(searchParams.get("budgetMax"));
+  const budgetFilterOn = budgetMin != null || budgetMax != null;
+  // 金額不明案件（応相談・要確認）を含めるか。既定は含める（true）。
+  // budgetIncludeUnknown=0/false/off のときだけ除外する。
+  const budgetIncludeUnknown = !["0", "false", "off"].includes(
+    (searchParams.get("budgetIncludeUnknown") ?? "").trim().toLowerCase(),
+  );
+
   // status=APPLIED,INTERVIEW のようにカンマ区切りで複数指定（複数選択フィルタ）
   const statusSet = new Set<string>(JOB_STATUS_VALUES);
   const statuses = (searchParams.get("status") ?? "")
@@ -196,22 +212,42 @@ export async function GET(req: Request) {
     detectedAt: { gte: freshSince },
   };
 
-  const skip = (page - 1) * limit;
+  const include = {
+    source: { select: { platform: true, url: true } },
+    discordNotifications: { take: 1, orderBy: { sentAt: "desc" as const } },
+  };
 
-  const [total, freshInWindow, rows] = await Promise.all([
-    db.detectedJob.count({ where }),
-    db.detectedJob.count({ where: whereFresh }),
-    db.detectedJob.findMany({
-      where,
-      include: {
-        source: { select: { platform: true, url: true } },
-        discordNotifications: { take: 1, orderBy: { sentAt: "desc" } },
-      },
-      orderBy,
-      skip,
-      take: limit,
-    }),
-  ]);
+  const freshThreshold = freshSince.getTime();
+
+  let total: number;
+  let freshInWindow: number;
+  let rows: Prisma.DetectedJobGetPayload<{ include: typeof include }>[];
+
+  if (!budgetFilterOn) {
+    // 予算フィルタなし: 従来どおり DB 側で件数カウント＆ページング（効率的）。
+    const skip = (page - 1) * limit;
+    [total, freshInWindow, rows] = await Promise.all([
+      db.detectedJob.count({ where }),
+      db.detectedJob.count({ where: whereFresh }),
+      db.detectedJob.findMany({ where, include, orderBy, skip, take: limit }),
+    ]);
+  } else {
+    // 予算フィルタあり: budget は文字列のため SQL で範囲判定できない。
+    // 他フィルタを適用した全件を取得し、抽出金額でアプリ側フィルタ→ページング。
+    // （データ規模が小さい前提。大規模化したら budget の数値列を別途持たせる。）
+    const allRows = await db.detectedJob.findMany({ where, include, orderBy });
+    const matched = allRows.filter((job) =>
+      budgetMatchesRange(parseBudgetAmounts(job.budget), budgetMin, budgetMax, budgetIncludeUnknown),
+    );
+
+    total = matched.length;
+    freshInWindow = matched.filter(
+      (job) => new Date(job.detectedAt).getTime() >= freshThreshold,
+    ).length;
+
+    const skip = (page - 1) * limit;
+    rows = matched.slice(skip, skip + limit);
+  }
 
   const mapped = rows.map((job) => ({
     ...job,
@@ -234,5 +270,12 @@ export async function GET(req: Request) {
     //  - keywords : 実際に適用したキーワード（OR 一致）
     //  - saved    : 設定済みキーワード（個別トグルの選択肢）
     keywordFilter: { active: keywordsFilterOn, keywords: appliedKeywords, saved: savedKeywords },
+    // 見積（予算）レンジフィルタの状態。
+    budgetFilter: {
+      active: budgetFilterOn,
+      min: budgetMin,
+      max: budgetMax,
+      includeUnknown: budgetIncludeUnknown,
+    },
   });
 }

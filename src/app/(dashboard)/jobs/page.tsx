@@ -15,6 +15,7 @@ import {
   ListFilterIcon,
   LoaderCircleIcon,
   MoreHorizontalIcon,
+  JapaneseYenIcon,
   PackageIcon,
   PercentIcon,
   SparklesIcon,
@@ -23,6 +24,7 @@ import {
   UsersIcon,
 } from "lucide-react";
 import * as React from "react";
+import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { toast } from "sonner";
 import { formatDistanceToNow } from "date-fns";
 import { ja } from "date-fns/locale";
@@ -62,6 +64,7 @@ import { PostingSourceBadges } from "@/components/posting-source-badges";
 import type { JobLiveStats } from "@/app/api/detected-jobs/[id]/live-stats/route";
 import {
   JOB_STATUS_LIST,
+  JOB_STATUS_VALUES,
   jobStatusMeta,
   statusAllowsAmount,
   formatYen,
@@ -72,6 +75,105 @@ import { JOB_KEYWORDS_SETTING_KEY, keywordsFromSettingValue } from "@/lib/job-ke
 
 /** Jobs 一覧で個別 ON にしたキーワードの選択状態を保持する localStorage キー。 */
 const KEYWORD_SELECTION_STORAGE_KEY = "jobs:selectedKeywords";
+
+/**
+ * Jobs 一覧の絞り込み・並び替え・ページングの状態。
+ * すべて URL クエリに反映し、その URL を開けば同じ表示を再現できる。
+ */
+type JobsFilters = {
+  q: string;
+  boardPf: "" | "lw" | "cw";
+  boardCat: "" | "system" | "web";
+  statusFilter: JobStatusValue[];
+  selectedKeywords: string[];
+  /** 見積（予算）レンジ（円）。空文字 = 未指定。 */
+  budgetMin: string;
+  budgetMax: string;
+  /** 金額不明（応相談・要確認）案件を含めるか。既定 true。 */
+  budgetIncludeUnknown: boolean;
+  sort: "" | "posted";
+  page: number;
+  pageSize: number;
+};
+
+const DEFAULT_PAGE_SIZE = 20;
+const PAGE_SIZE_OPTIONS = [10, 20, 50, 100];
+const STATUS_VALUE_SET = new Set<string>(JOB_STATUS_VALUES);
+
+/** URL の searchParams から絞り込み状態を復元する（不正値は既定値にフォールバック）。 */
+function parseFiltersFromParams(sp: URLSearchParams): JobsFilters {
+  const boardPfRaw = sp.get("boardPf");
+  const boardPf: JobsFilters["boardPf"] =
+    boardPfRaw === "lw" || boardPfRaw === "cw" ? boardPfRaw : "";
+
+  const boardCatRaw = sp.get("boardCat");
+  const boardCat: JobsFilters["boardCat"] =
+    boardCatRaw === "system" || boardCatRaw === "web" ? boardCatRaw : "";
+
+  const statusFilter = (sp.get("status") ?? "")
+    .split(",")
+    .map((s) => s.trim().toUpperCase())
+    .filter((s) => STATUS_VALUE_SET.has(s)) as JobStatusValue[];
+
+  const selectedKeywords = (sp.get("keywords") ?? "")
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean);
+
+  // 数値（円）だけ取り出す。不正値は空文字（未指定）に。
+  const yen = (raw: string | null): string => {
+    if (!raw) return "";
+    const digits = raw.replace(/[^\d]/g, "");
+    return digits;
+  };
+  const budgetMin = yen(sp.get("budgetMin"));
+  const budgetMax = yen(sp.get("budgetMax"));
+  // 既定は含める（true）。URL に budgetIncludeUnknown=0/false/off のときだけ false。
+  const budgetIncludeUnknown = !["0", "false", "off"].includes(
+    (sp.get("budgetIncludeUnknown") ?? "").trim().toLowerCase(),
+  );
+
+  const sort: JobsFilters["sort"] = sp.get("sort") === "posted" ? "posted" : "";
+
+  const pageRaw = parseInt(sp.get("page") ?? "1", 10);
+  const page = Number.isFinite(pageRaw) && pageRaw >= 1 ? pageRaw : 1;
+
+  const sizeRaw = parseInt(sp.get("limit") ?? String(DEFAULT_PAGE_SIZE), 10);
+  const pageSize = PAGE_SIZE_OPTIONS.includes(sizeRaw) ? sizeRaw : DEFAULT_PAGE_SIZE;
+
+  return {
+    q: sp.get("q")?.trim() ?? "",
+    boardPf,
+    boardCat,
+    statusFilter,
+    selectedKeywords,
+    budgetMin,
+    budgetMax,
+    budgetIncludeUnknown,
+    sort,
+    page,
+    pageSize,
+  };
+}
+
+/** 絞り込み状態を URL/API 共通のクエリ文字列に変換する（既定値は省略してURLを短く保つ）。 */
+function buildQueryString(f: JobsFilters): string {
+  const u = new URLSearchParams();
+  if (f.q.trim()) u.set("q", f.q.trim());
+  if (f.boardPf) u.set("boardPf", f.boardPf);
+  if (f.boardCat) u.set("boardCat", f.boardCat);
+  if (f.statusFilter.length > 0) u.set("status", f.statusFilter.join(","));
+  if (f.selectedKeywords.length > 0) u.set("keywords", f.selectedKeywords.join(","));
+  if (f.budgetMin.trim()) u.set("budgetMin", f.budgetMin.trim());
+  if (f.budgetMax.trim()) u.set("budgetMax", f.budgetMax.trim());
+  // 見積フィルタ適用中に「金額不明を除外」のときだけ URL に出す（既定 true は省略）。
+  const budgetActive = Boolean(f.budgetMin.trim() || f.budgetMax.trim());
+  if (budgetActive && !f.budgetIncludeUnknown) u.set("budgetIncludeUnknown", "0");
+  if (f.sort) u.set("sort", f.sort);
+  if (f.page > 1) u.set("page", String(f.page));
+  if (f.pageSize !== DEFAULT_PAGE_SIZE) u.set("limit", String(f.pageSize));
+  return u.toString();
+}
 
 type ClientListingMeta = {
   ordersText: string | null;
@@ -111,6 +213,12 @@ type JobsListPayload = {
   freshInWindow: number;
   totalPages: number;
   keywordFilter: { active: boolean; keywords: string[]; saved: string[] };
+  budgetFilter: {
+    active: boolean;
+    min: number | null;
+    max: number | null;
+    includeUnknown: boolean;
+  };
 };
 
 type RowStats = JobLiveStats | { loading: true } | { error: string };
@@ -723,18 +831,58 @@ function DetectedJobsPaginationBar(props: {
   );
 }
 
-export default function JobsPage() {
+function JobsPageInner() {
   const qc = useQueryClient();
-  const [q, setQ] = React.useState("");
-  const [boardPf, setBoardPf] = React.useState<"" | "lw" | "cw">("");
-  const [boardCat, setBoardCat] = React.useState<"" | "system" | "web">("");
-  const [statusFilter, setStatusFilter] = React.useState<JobStatusValue[]>([]);
+  const router = useRouter();
+  const pathname = usePathname();
+  const searchParams = useSearchParams();
+
+  // URL を絞り込み状態の source of truth とする。初期値は現在の URL から復元。
+  // ``keywords`` は URL に無い場合のみ localStorage の選択を初期値として採用する。
+  const initialFilters = React.useMemo(() => {
+    const sp = new URLSearchParams(searchParams?.toString() ?? "");
+    const parsed = parseFiltersFromParams(sp);
+    if (!sp.has("keywords") && typeof window !== "undefined") {
+      try {
+        const raw = window.localStorage.getItem(KEYWORD_SELECTION_STORAGE_KEY);
+        if (raw) {
+          const stored = JSON.parse(raw);
+          if (Array.isArray(stored)) {
+            parsed.selectedKeywords = stored.filter(
+              (x): x is string => typeof x === "string",
+            );
+          }
+        }
+      } catch {
+        // 破損データは無視（全 OFF のまま）。
+      }
+    }
+    return parsed;
+    // 初期化は初回マウントのみ。以降の URL 変化は明示的な戻る/進む操作で扱う。
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const [q, setQ] = React.useState(initialFilters.q);
+  const [boardPf, setBoardPf] = React.useState<"" | "lw" | "cw">(initialFilters.boardPf);
+  const [boardCat, setBoardCat] = React.useState<"" | "system" | "web">(initialFilters.boardCat);
+  const [statusFilter, setStatusFilter] = React.useState<JobStatusValue[]>(
+    initialFilters.statusFilter,
+  );
   // 設定済みキーワードのうち、個別に ON にしたもの（OR 一致で絞り込む）。
-  // 初期状態は全 OFF。選択は localStorage に保存し、リロード後も維持する。
-  const [selectedKeywords, setSelectedKeywords] = React.useState<string[]>([]);
-  const [sort, setSort] = React.useState<"" | "posted">("");
-  const [page, setPage] = React.useState(1);
-  const [pageSize, setPageSize] = React.useState(20);
+  // 初期状態は URL → localStorage の順で復元。選択は URL と localStorage 両方に保存する。
+  const [selectedKeywords, setSelectedKeywords] = React.useState<string[]>(
+    initialFilters.selectedKeywords,
+  );
+  // 見積（予算）レンジ（円）。空文字 = 未指定。
+  const [budgetMin, setBudgetMin] = React.useState(initialFilters.budgetMin);
+  const [budgetMax, setBudgetMax] = React.useState(initialFilters.budgetMax);
+  // 金額不明（応相談・要確認）案件を含めるか。既定 true。
+  const [budgetIncludeUnknown, setBudgetIncludeUnknown] = React.useState(
+    initialFilters.budgetIncludeUnknown,
+  );
+  const [sort, setSort] = React.useState<"" | "posted">(initialFilters.sort);
+  const [page, setPage] = React.useState(initialFilters.page);
+  const [pageSize, setPageSize] = React.useState(initialFilters.pageSize);
   const [selected, setSelected] = React.useState<Record<string, boolean>>({});
   const [detail, setDetail] = React.useState<JobRow | null>(null);
   const [liveStatsMap, setLiveStatsMap] = React.useState<Record<string, RowStats>>({});
@@ -760,21 +908,6 @@ export default function JobsPage() {
     () => savedKeywordsQuery.data ?? [],
     [savedKeywordsQuery.data],
   );
-
-  // localStorage から選択状態を復元（初回マウント時）。
-  React.useEffect(() => {
-    try {
-      const raw = window.localStorage.getItem(KEYWORD_SELECTION_STORAGE_KEY);
-      if (raw) {
-        const parsed = JSON.parse(raw);
-        if (Array.isArray(parsed)) {
-          setSelectedKeywords(parsed.filter((x): x is string => typeof x === "string"));
-        }
-      }
-    } catch {
-      // 破損データは無視（全 OFF のまま）。
-    }
-  }, []);
 
   // 設定が変わって存在しなくなったキーワードは選択から外す（保存値と同期）。
   React.useEffect(() => {
@@ -805,12 +938,19 @@ export default function JobsPage() {
     });
   };
 
+  // 絞り込み条件（ページ・ページサイズ以外）が変わったら 1 ページ目に戻し、行ごとの一時状態をリセット。
+  // 初回マウント時（URL から復元した page をそのまま使う）は実行しない。
+  const didMountRef = React.useRef(false);
   React.useEffect(() => {
+    if (!didMountRef.current) {
+      didMountRef.current = true;
+      return;
+    }
     setPage(1);
     setLiveStatsMap({});
     setStatusOverrides({});
     setAmountOverrides({});
-  }, [q, boardPf, boardCat, statusFilter, selectedKeywords, sort]);
+  }, [q, boardPf, boardCat, statusFilter, selectedKeywords, budgetMin, budgetMax, budgetIncludeUnknown, sort]);
 
   const handleBulkLiveStats = async () => {
     if (bulkFetching || listJobs.length === 0) return;
@@ -839,23 +979,74 @@ export default function JobsPage() {
     setBulkFetching(false);
   };
 
-  const qs = React.useMemo(() => {
-    const u = new URLSearchParams();
-    if (q.trim()) u.set("q", q.trim());
-    if (boardPf) u.set("boardPf", boardPf);
-    if (boardCat) u.set("boardCat", boardCat);
-    if (statusFilter.length > 0) u.set("status", statusFilter.join(","));
-    if (selectedKeywords.length > 0) u.set("keywords", selectedKeywords.join(","));
-    if (sort) u.set("sort", sort);
+  // すべての絞り込み状態を 1 つにまとめる（URL・API・同期で共通利用）。
+  const filters = React.useMemo<JobsFilters>(
+    () => ({
+      q,
+      boardPf,
+      boardCat,
+      statusFilter,
+      selectedKeywords,
+      budgetMin,
+      budgetMax,
+      budgetIncludeUnknown,
+      sort,
+      page,
+      pageSize,
+    }),
+    [
+      q,
+      boardPf,
+      boardCat,
+      statusFilter,
+      selectedKeywords,
+      budgetMin,
+      budgetMax,
+      budgetIncludeUnknown,
+      sort,
+      page,
+      pageSize,
+    ],
+  );
+
+  // 見積フィルタのボタン表示ラベル（円を万表記に丸めて短く）。
+  const budgetLabel = React.useMemo(() => {
+    const fmt = (yen: string) => {
+      const n = parseInt(yen, 10);
+      if (!Number.isFinite(n)) return "";
+      return n % 10000 === 0 ? `${n / 10000}万` : `${n.toLocaleString()}`;
+    };
+    const lo = budgetMin ? fmt(budgetMin) : "";
+    const hi = budgetMax ? fmt(budgetMax) : "";
+    if (!lo && !hi) return "見積";
+    if (lo && hi) return `${lo}〜${hi}円`;
+    if (lo) return `${lo}円〜`;
+    return `〜${hi}円`;
+  }, [budgetMin, budgetMax]);
+
+  // URL 用クエリ文字列（既定値は省略して URL を短く保つ）。
+  const urlQs = React.useMemo(() => buildQueryString(filters), [filters]);
+
+  // API 用クエリ文字列（page/limit は常に明示）。
+  const apiQs = React.useMemo(() => {
+    const u = new URLSearchParams(urlQs);
     u.set("page", String(page));
     u.set("limit", String(pageSize));
     return u.toString();
-  }, [q, boardPf, boardCat, statusFilter, selectedKeywords, sort, page, pageSize]);
+  }, [urlQs, page, pageSize]);
+
+  // 状態 → URL 同期。現在の URL と異なるときだけ replace（履歴を汚さない・ループ防止）。
+  React.useEffect(() => {
+    const current = searchParams?.toString() ?? "";
+    if (current === urlQs) return;
+    const href = urlQs ? `${pathname}?${urlQs}` : pathname;
+    router.replace(href, { scroll: false });
+  }, [urlQs, pathname, router, searchParams]);
 
   const { data, isLoading } = useQuery({
-    queryKey: ["jobs", qs],
+    queryKey: ["jobs", apiQs],
     queryFn: async () => {
-      const res = await fetch(`/api/detected-jobs?${qs}`, { cache: "no-store" });
+      const res = await fetch(`/api/detected-jobs?${apiQs}`, { cache: "no-store" });
       const json = await res.json();
       if (!json.ok) throw new Error(json.error.message);
       return json.data as JobsListPayload;
@@ -1013,6 +1204,28 @@ export default function JobsPage() {
                   {kw}
                 </Badge>
               ))}
+            </div>
+          ) : null}
+          {budgetMin || budgetMax ? (
+            <div className="flex flex-wrap items-center gap-1.5">
+              <span className="inline-flex items-center gap-1 text-xs text-amber-700 dark:text-amber-400">
+                <JapaneseYenIcon className="size-3.5 shrink-0" aria-hidden />
+                見積:
+              </span>
+              <Badge
+                variant="outline"
+                className="border-amber-500/40 bg-amber-500/10 text-[10px] text-amber-900 dark:text-amber-200"
+              >
+                {budgetLabel}
+              </Badge>
+              {!budgetIncludeUnknown ? (
+                <Badge
+                  variant="outline"
+                  className="border-zinc-300 text-[10px] text-zinc-500 dark:border-zinc-600 dark:text-zinc-400"
+                >
+                  金額不明を除外
+                </Badge>
+              ) : null}
             </div>
           ) : null}
         </div>
@@ -1228,6 +1441,100 @@ export default function JobsPage() {
                     </div>
                   </>
                 )}
+              </PopoverContent>
+            </Popover>
+            <Popover>
+              <PopoverTrigger asChild>
+                <Button
+                  variant="outline"
+                  className="h-9 w-auto min-w-[8rem] shrink-0 justify-start gap-2 font-normal"
+                  aria-label="見積（予算）レンジで絞り込み"
+                >
+                  <JapaneseYenIcon className="size-4 shrink-0 text-amber-600 dark:text-amber-400" aria-hidden />
+                  <span className="truncate">{budgetLabel}</span>
+                </Button>
+              </PopoverTrigger>
+              <PopoverContent align="end" className="w-72 p-3">
+                <div className="flex items-center justify-between pb-2">
+                  <span className="text-xs font-medium text-zinc-500">見積（予算）レンジ（円）</span>
+                  {budgetMin || budgetMax ? (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setBudgetMin("");
+                        setBudgetMax("");
+                      }}
+                      className="text-xs text-violet-600 hover:underline dark:text-violet-400"
+                    >
+                      クリア
+                    </button>
+                  ) : null}
+                </div>
+                <Separator className="mb-3" />
+                <div className="flex items-end gap-2">
+                  <div className="flex-1 space-y-1">
+                    <Label htmlFor="budget-min" className="text-[11px] text-zinc-500">
+                      最小
+                    </Label>
+                    <Input
+                      id="budget-min"
+                      inputMode="numeric"
+                      value={budgetMin}
+                      onChange={(e) => setBudgetMin(e.target.value.replace(/[^\d]/g, ""))}
+                      placeholder="例: 100000"
+                      className="h-9 tabular-nums"
+                    />
+                  </div>
+                  <span className="pb-2 text-zinc-400">〜</span>
+                  <div className="flex-1 space-y-1">
+                    <Label htmlFor="budget-max" className="text-[11px] text-zinc-500">
+                      最大
+                    </Label>
+                    <Input
+                      id="budget-max"
+                      inputMode="numeric"
+                      value={budgetMax}
+                      onChange={(e) => setBudgetMax(e.target.value.replace(/[^\d]/g, ""))}
+                      placeholder="例: 300000"
+                      className="h-9 tabular-nums"
+                    />
+                  </div>
+                </div>
+                <div className="mt-3 flex flex-wrap gap-1.5">
+                  {[
+                    { label: "〜5万", min: "", max: "50000" },
+                    { label: "5〜10万", min: "50000", max: "100000" },
+                    { label: "10〜30万", min: "100000", max: "300000" },
+                    { label: "30万〜", min: "300000", max: "" },
+                  ].map((p) => (
+                    <button
+                      key={p.label}
+                      type="button"
+                      onClick={() => {
+                        setBudgetMin(p.min);
+                        setBudgetMax(p.max);
+                      }}
+                      className="rounded-full border border-zinc-200 px-2.5 py-1 text-[11px] text-zinc-600 transition-colors hover:bg-muted dark:border-zinc-700 dark:text-zinc-300"
+                    >
+                      {p.label}
+                    </button>
+                  ))}
+                </div>
+                <Separator className="my-3" />
+                <label className="flex cursor-pointer items-start gap-2 text-xs text-zinc-700 dark:text-zinc-300">
+                  <Checkbox
+                    checked={budgetIncludeUnknown}
+                    onCheckedChange={(v) => setBudgetIncludeUnknown(v !== false)}
+                    aria-label="金額不明（応相談・要確認）の案件を含める"
+                    className="mt-0.5"
+                  />
+                  <span>
+                    金額不明（応相談・要確認）の案件を含める
+                    <span className="mt-0.5 block text-[10px] leading-snug text-zinc-400">
+                      オフにすると、見積レンジ指定中は金額が読み取れない案件を除外します。
+                    </span>
+                  </span>
+                </label>
               </PopoverContent>
             </Popover>
             <Select value={sort || "__default"} onValueChange={(v) => setSort(v === "__default" ? "" : (v as typeof sort))}>
@@ -1607,6 +1914,17 @@ export default function JobsPage() {
         </DialogContent>
       </Dialog>
     </div>
+  );
+}
+
+/**
+ * `useSearchParams` を使うため Suspense 境界でラップする（Next.js App Router の要件）。
+ */
+export default function JobsPage() {
+  return (
+    <React.Suspense fallback={<Skeleton className="h-96 w-full rounded-xl" />}>
+      <JobsPageInner />
+    </React.Suspense>
   );
 }
 
